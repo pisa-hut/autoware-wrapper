@@ -32,9 +32,9 @@ import sensor_msgs.msg as sensor_msgs
 import autoware_perception_msgs.msg as autoware_perception_msgs
 
 
-from sbsvf_api.control_pb2 import CtrlMode, CtrlCmd
-from sbsvf_api.object_pb2 import ObjectKinematic, ObjectState, RoadObjectType, ShapeType
-from sbsvf_api.scenario_pb2 import ScenarioPack
+from pisa_api.control_pb2 import CtrlMode, CtrlCmd
+from pisa_api.object_pb2 import ObjectKinematic, ObjectState, RoadObjectType, ShapeType
+from pisa_api.scenario_pb2 import ScenarioPack
 
 from publish_manager import PublishManager, TopicPublisher, PublishMode
 from exception.av import (

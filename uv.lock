@@ -8,15 +8,15 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "pisa-api" },
     { name = "pyyaml" },
-    { name = "sbsvf-api" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "pisa-api", git = "https://github.com/PISA-Hut/pisa-api.git" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "sbsvf-api", git = "https://github.com/lolainta/sbsvf-api.git" },
 ]
 
 [[package]]
@@ -63,6 +63,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pisa-api"
+version = "0.1.17"
+source = { git = "https://github.com/PISA-Hut/pisa-api.git#db31c8df8794c4497562ccbd1f553f3c31a66ce1" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "protobuf" },
+]
+
+[[package]]
 name = "protobuf"
 version = "6.33.5"
 source = { registry = "https://pypi.org/simple" }
@@ -92,15 +101,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/15/2bc9c8faf6450a8b3c9fc5448ed869c599c0a74ba2669772b1f3a0040180/pyyaml-6.0.3-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:5e0b74767e5f8c593e8c9b5912019159ed0533c70051e9cce3e8b6aa699fcd69", size = 758828, upload-time = "2025-09-25T21:31:54.807Z" },
     { url = "https://files.pythonhosted.org/packages/a3/00/531e92e88c00f4333ce359e50c19b8d1de9fe8d581b1534e35ccfbc5f393/pyyaml-6.0.3-cp310-cp310-win32.whl", hash = "sha256:28c8d926f98f432f88adc23edf2e6d4921ac26fb084b028c733d01868d19007e", size = 142415, upload-time = "2025-09-25T21:31:55.885Z" },
     { url = "https://files.pythonhosted.org/packages/2a/fa/926c003379b19fca39dd4634818b00dec6c62d87faf628d1394e137354d4/pyyaml-6.0.3-cp310-cp310-win_amd64.whl", hash = "sha256:bdb2c67c6c1390b63c6ff89f210c8fd09d9a1217a465701eac7316313c915e4c", size = 158561, upload-time = "2025-09-25T21:31:57.406Z" },
-]
-
-[[package]]
-name = "sbsvf-api"
-version = "0.1.15"
-source = { git = "https://github.com/lolainta/sbsvf-api.git#24c5ee7d55ea93ba27a87547973e51799b9029ad" }
-dependencies = [
-    { name = "grpcio" },
-    { name = "protobuf" },
 ]
 
 [[package]]

@@ -7,8 +7,8 @@ requires-python = "==3.10.*"
 dependencies = [
     "numpy>=2.2.6",
     "pyyaml>=6.0.3",
-    "sbsvf-api",
+    "pisa-api>=0.1.17",
 ]
 
 [tool.uv.sources]
-sbsvf-api = { git = "https://github.com/lolainta/sbsvf-api.git" }
+pisa-api = { git = "https://github.com/PISA-Hut/pisa-api.git" }
