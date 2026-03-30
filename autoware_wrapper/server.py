@@ -32,10 +32,11 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
         self._av = None
 
     def Ping(self, request, context):
-        logger.info(f"Received ping from client: {context.peer()}")
+        logger.debug(f"Received ping from client: {context.peer()}")
         return Pong(msg="Autoware alive")
 
     def Init(self, request, context):
+        logger.debug(f"Received Init request from client: {context.peer()}")
         output_dir = request.output_dir.path
         config = MessageToDict(request.config.config)
         scenario_pack = request.scenario_pack
@@ -49,6 +50,7 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
         )
 
     def Reset(self, request, context):
+        logger.debug(f"Received Reset request from client: {context.peer()}")
         output_dir = request.output_dir.path
         scenario_pack = request.scenario_pack
         initial_observation = request.initial_observation
@@ -70,7 +72,7 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
             context.set_details(str(e))
             return av_server_pb2.AvServerMessages.ResetResponse(ctrl_cmd={})
         except Exception as e:
-            logger.error(f"Unexpected error during Reset: {str(e)}")
+            logger.exception(f"Unexpected error during Reset: {str(e)}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"Unexpected error: {str(e)}")
             return av_server_pb2.AvServerMessages.ResetResponse(ctrl_cmd={})
@@ -78,6 +80,7 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
             return av_server_pb2.AvServerMessages.ResetResponse(ctrl_cmd=ret)
 
     def Step(self, request, context):
+        logger.debug(f"Received Step request with timestamp_ns={request.timestamp_ns}")
         observation = request.observation
         timestamp_ns = request.timestamp_ns
         return av_server_pb2.AvServerMessages.StepResponse(
@@ -85,6 +88,7 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
         )
 
     def Stop(self, request, context):
+        logger.debug(f"Received Stop request from client: {context.peer()}")
         self._av.stop()
         return Empty()
 

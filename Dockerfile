@@ -10,6 +10,9 @@ EOF
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+RUN useradd -ms /bin/bash autoware
+USER autoware
+
 WORKDIR /app
 COPY ./pyproject.toml .
 COPY ./uv.lock .
