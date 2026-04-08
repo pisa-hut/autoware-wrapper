@@ -37,13 +37,13 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
 
     def Init(self, request, context):
         logger.debug(f"Received Init request from client: {context.peer()}")
-        output_dir = request.output_dir.path
         config = MessageToDict(request.config.config)
-        scenario_pack = request.scenario_pack
+        output_dir = request.output_dir.path
+        map_name = request.map_name
         pprint(config)
 
         self._av = AutowarePureAV(output_dir, config)
-        self._av.init(scenario_pack)
+        self._av.init(map_name)
 
         return av_server_pb2.AvServerMessages.InitResponse(
             success=True, msg="Autoware initialized"

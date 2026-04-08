@@ -87,7 +87,7 @@ class AutowarePureAV:
 
         launch_cfg = self._autoware_cfg.get("launch", {})
         self._launch_package = launch_cfg.get("package", "autoware_launch")
-        self._launch_file = launch_cfg.get("file", "sbsvf.launch.xml")
+        self._launch_file = launch_cfg.get("file", "pisa.launch.xml")
         self._headless = bool(launch_cfg.get("headless", True))
         self._extra_launch_args: List[str] = list(launch_cfg.get("extra_args", []))
         self._autoware_log_path = self._output_base / launch_cfg.get(
@@ -172,14 +172,14 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
-    def init(self, sps: ScenarioPack) -> None:
+    def init(self, map_name: str) -> None:
         """
         - ROS node + spin thread
         - Launch Autoware (subprocess)
         - Wait for API services ready
         """
 
-        self._setup_sps(sps)
+        self._set_map(map_name)
         self._ensure_ros_node()
 
         self._launch_autoware()
@@ -1282,6 +1282,18 @@ class AutowarePureAV:
 
         return CtrlCmd(mode=CtrlMode.ACKERMANN, payload=payload)
 
+    def _set_map(self, map_name: str) -> None:
+        map_full_path = Path(f"/mnt/map/osm/{map_name}.osm").resolve()
+        if not map_full_path.exists():
+            raise FileNotFoundError(f"Autoware map file not found: {map_full_path}")
+        if map_full_path.suffix.lower() != ".osm":
+            raise ValueError(
+                f"Autoware map file must be .osm format, got: {map_full_path}"
+            )
+        is_changed = self._map_path != map_full_path
+        self._map_path = map_full_path
+        return is_changed
+
     def _setup_sps(self, sps: ScenarioPack) -> bool:
         """
         Update map path from ScenarioPack.
@@ -1290,24 +1302,7 @@ class AutowarePureAV:
 
         # Update sps
         self._sps = sps
-
-        # Map path
-        map_full_path = Path(f"/mnt/map/osm/{sps.map_name}.osm").resolve()
-        if not map_full_path.exists():
-            raise FileNotFoundError(f"Autoware map file not found: {map_full_path}")
-
-        if map_full_path.suffix.lower() != ".osm":
-            raise ValueError(
-                f"Autoware map file must be .osm format, got: {map_full_path}"
-            )
-
-        # Check if changed
-        is_changed = self._map_path != map_full_path
-
-        # Update map path
-        self._map_path = map_full_path
-
-        return is_changed
+        return self._set_map(sps.map_name)
 
     def _stop_autoware_vehicle(self) -> None:
         try:
