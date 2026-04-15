@@ -1282,7 +1282,7 @@ class AutowarePureAV:
 
         return CtrlCmd(mode=CtrlMode.ACKERMANN, payload=payload)
 
-    def _set_map(self, map_name: str) -> None:
+    def _set_map(self, map_name: str) -> bool:
         map_full_path = Path(f"/mnt/map/osm/{map_name}.osm").resolve()
         if not map_full_path.exists():
             raise FileNotFoundError(f"Autoware map file not found: {map_full_path}")
