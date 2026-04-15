@@ -11,7 +11,7 @@ EOF
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 RUN useradd -ms /bin/bash autoware
-RUN chown -R autoware:autoware /opt/autoware
+RUN chown -R autoware:autoware /opt/autoware/share/autoware_launch/launch /opt/autoware/share/autoware_launch/config
 USER autoware
 
 WORKDIR /app
