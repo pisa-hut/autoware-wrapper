@@ -1,9 +1,8 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
-from rclpy.time import Time, Duration
-
-
 from enum import Enum, auto
+
+from rclpy.time import Duration, Time
 
 
 class PublishMode(Enum):
@@ -20,13 +19,11 @@ class TopicPublisher:
     enabled: bool
     publish_fn: Callable[[Time], None]
 
-    last_pub_time: Optional[Time] = field(default=None, init=False, repr=False)
-    _period: Optional[Duration] = field(default=None, init=False, repr=False)
+    last_pub_time: Time | None = field(default=None, init=False, repr=False)
+    _period: Duration | None = field(default=None, init=False, repr=False)
 
     def setup(self):
-        self._period = (
-            None if self.rate_hz <= 0.0 else Duration(seconds=1.0 / self.rate_hz)
-        )
+        self._period = None if self.rate_hz <= 0.0 else Duration(seconds=1.0 / self.rate_hz)
 
     def should_publish(self, now: Time) -> bool:
         if not self.enabled:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Patch Autoware YAML configs in one shot with backup and extensible rules.
@@ -21,7 +20,7 @@ import datetime as dt
 import os
 import shutil
 import sys
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any
 
 try:
     import yaml  # PyYAML
@@ -44,7 +43,7 @@ def backup_file(path: str) -> str:
 
 
 def load_yaml(path: str) -> Yaml:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -75,7 +74,7 @@ def set_param_under_any_ros_parameters(
     root: Yaml,
     param_key: str,
     value: Any,
-    ros_keys: Tuple[str, ...] = ("ros__parameters", "ros__paramters"),
+    ros_keys: tuple[str, ...] = ("ros__parameters", "ros__paramters"),
 ) -> int:
     """
     Find every dict node that contains ros__parameters (or ros__paramters typo),
@@ -95,7 +94,7 @@ def set_param_under_any_ros_parameters(
     return n
 
 
-def set_nested_key(root: Yaml, path: List[Union[str, int]], value: Any) -> bool:
+def set_nested_key(root: Yaml, path: list[str | int], value: Any) -> bool:
     """
     Set a nested key by exact path (dict keys / list indices).
     Returns True if changed, False if path not found.
@@ -240,7 +239,7 @@ RULES = [
 ]
 
 
-def apply_rule(data: Yaml, rule: Dict[str, Any]) -> int:
+def apply_rule(data: Yaml, rule: dict[str, Any]) -> int:
     rtype = rule["type"]
 
     if rtype == "rosparam":
@@ -273,9 +272,7 @@ def apply_rule(data: Yaml, rule: Dict[str, Any]) -> int:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--apply", action="store_true", help="Actually write changes (with backup)."
-    )
+    ap.add_argument("--apply", action="store_true", help="Actually write changes (with backup).")
     ap.add_argument(
         "--dry-run",
         action="store_true",
@@ -333,9 +330,7 @@ def main():
             if data == original:
                 print("[OK] No change needed.")
             else:
-                print(
-                    "[WARN] Structure changed but no counted modifications (unexpected)."
-                )
+                print("[WARN] Structure changed but no counted modifications (unexpected).")
         else:
             print(f"[OK] Modified occurrences: {changed_count}")
 

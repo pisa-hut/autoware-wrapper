@@ -5,12 +5,10 @@ import math
 import time
 from dataclasses import dataclass
 
+import autoware_adapi_v1_msgs.srv as autoware_adapi_v1_msgs_srv
+import geometry_msgs.msg as geometry_msgs
 import rclpy
 from rclpy.node import Node
-
-import geometry_msgs.msg as geometry_msgs
-import autoware_adapi_v1_msgs.srv as autoware_adapi_v1_msgs_srv
-
 
 # ------------------------------------------------------------------
 # Quick edit area: change these values in code (no CLI needed)
@@ -122,9 +120,7 @@ def call_clear_route(node: Node, client, timeout_sec: float) -> None:
         status_msg = getattr(res.status, "message", None) if res else "no response"
         code = getattr(res.status, "code", "unknown") if res else "no response"
         succ = getattr(res.status, "success", "unknown") if res else "no response"
-        raise RuntimeError(
-            f"ClearRoute failed: code={code}, success={succ}, message={status_msg}"
-        )
+        raise RuntimeError(f"ClearRoute failed: code={code}, success={succ}, message={status_msg}")
     node.get_logger().info(
         f"ClearRoute success: code={res.status.code}, message={res.status.message}"
     )
