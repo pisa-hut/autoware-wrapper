@@ -1,6 +1,4 @@
 import logging
-import os
-from concurrent import futures
 from pprint import pprint
 
 import grpc
@@ -11,26 +9,20 @@ from exception.av import (
     RouteError,
 )
 from google.protobuf.json_format import MessageToDict
-from pisa_api import av_server_pb2, av_server_pb2_grpc
+from pisa_api import av_server_pb2
 from pisa_api.empty_pb2 import Empty
-from pisa_api.pong_pb2 import Pong
+from pisa_api.wrapper import BaseAvServer, serve_av, setup_logging
 
+setup_logging()
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler()],
-)
 
 
-class AVServer(av_server_pb2_grpc.AvServerServicer):
+class AVServer(BaseAvServer):
+    _name = "Autoware"
+
     def __init__(self):
         super().__init__()
         self._av = None
-
-    def Ping(self, request, context):
-        logger.debug(f"Received ping from client: {context.peer()}")
-        return Pong(msg="Autoware alive")
 
     def Init(self, request, context):
         logger.debug(f"Received Init request from client: {context.peer()}")
@@ -92,24 +84,5 @@ class AVServer(av_server_pb2_grpc.AvServerServicer):
         return av_server_pb2.AvServerMessages.ShouldQuitResponse(should_quit=should_quit)
 
 
-def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-
-    av_server_pb2_grpc.add_AvServerServicer_to_server(AVServer(), server)
-
-    PORT = os.environ.get("PORT", "50051")
-
-    server.add_insecure_port(f"[::]:{PORT}")
-    server.start()
-
-    print(f"gRPC server is running on port {PORT}")
-
-    try:
-        server.wait_for_termination()
-    except KeyboardInterrupt:
-        print("Shutting down gRPC server")
-        server.stop(0)
-
-
 if __name__ == "__main__":
-    serve()
+    serve_av(AVServer(), name="Autoware")
