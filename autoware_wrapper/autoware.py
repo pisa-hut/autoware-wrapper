@@ -1,48 +1,39 @@
 from __future__ import annotations
 
+import logging
 import math
 import os
+import signal
 import subprocess
 import threading
-import signal
 import time
 from pathlib import Path
-from typing import Optional, List
 
-import logging
-
-
-import rclpy
-from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.time import Time
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy
-
-from tf2_ros import TransformBroadcaster
-
-import rosgraph_msgs.msg as rosgraph_msgs
-import nav_msgs.msg as nav_msgs
-import geometry_msgs.msg as geometry_msgs
-import autoware_system_msgs.msg as autoware_system_msgs
-import autoware_control_msgs.msg as autoware_control_msgs
 import autoware_adapi_v1_msgs.msg as autoware_adapi_v1_msgs
 import autoware_adapi_v1_msgs.srv as autoware_adapi_v1_msgs_srv
-import autoware_vehicle_msgs.msg as autoware_vehicle_msgs
-import sensor_msgs.msg as sensor_msgs
+import autoware_control_msgs.msg as autoware_control_msgs
 import autoware_perception_msgs.msg as autoware_perception_msgs
-
-
-from pisa_api.control_pb2 import CtrlMode, CtrlCmd
-from pisa_api.object_pb2 import ObjectKinematic, ObjectState, RoadObjectType, ShapeType
-from pisa_api.scenario_pb2 import ScenarioPack
-
-from publish_manager import PublishManager, TopicPublisher, PublishMode
+import autoware_system_msgs.msg as autoware_system_msgs
+import autoware_vehicle_msgs.msg as autoware_vehicle_msgs
+import geometry_msgs.msg as geometry_msgs
+import nav_msgs.msg as nav_msgs
+import rclpy
+import rosgraph_msgs.msg as rosgraph_msgs
+import sensor_msgs.msg as sensor_msgs
 from exception.av import (
-    RouteError,
     LocalizationTimeoutError,
     PlanningTimeoutError,
+    RouteError,
 )
-
+from pisa_api.control_pb2 import CtrlCmd, CtrlMode
+from pisa_api.object_pb2 import ObjectKinematic, ObjectState, RoadObjectType, ShapeType
+from pisa_api.scenario_pb2 import ScenarioPack
+from publish_manager import PublishManager, PublishMode, TopicPublisher
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+from rclpy.time import Time
+from tf2_ros import TransformBroadcaster
 
 CLOCK_PUB_HZ = 100.0  # Hz
 
@@ -89,7 +80,7 @@ class AutowarePureAV:
         self._launch_package = launch_cfg.get("package", "autoware_launch")
         self._launch_file = launch_cfg.get("file", "pisa.launch.xml")
         self._headless = bool(launch_cfg.get("headless", True))
-        self._extra_launch_args: List[str] = list(launch_cfg.get("extra_args", []))
+        self._extra_launch_args: list[str] = list(launch_cfg.get("extra_args", []))
         self._autoware_log_path = self._output_base / launch_cfg.get(
             "log_path", "autoware_launch.log"
         )
@@ -119,14 +110,14 @@ class AutowarePureAV:
             )
 
         # ScenarioPack
-        self._sps: Optional[ScenarioPack] = None
-        self._map_path: Optional[Path] = None
+        self._sps: ScenarioPack | None = None
+        self._map_path: Path | None = None
 
         # —— Autoware process & ROS node status ——
-        self._autoware_proc: Optional[subprocess.Popen] = None
-        self._node: Optional[Node] = None
-        self._executor: Optional[MultiThreadedExecutor] = None
-        self._spin_thread: Optional[threading.Thread] = None
+        self._autoware_proc: subprocess.Popen | None = None
+        self._node: Node | None = None
+        self._executor: MultiThreadedExecutor | None = None
+        self._spin_thread: threading.Thread | None = None
 
         # pub / sub / services
         self._publish_manager = PublishManager()
@@ -154,20 +145,18 @@ class AutowarePureAV:
         self._sim_time_ns: int = 0  # time at current sim step (nanoseconds)
         self._current_ros_time_ns: int = 0  # current ROS time (nanoseconds)
 
-        self._vehicle_state: Optional[int] = None
-        self._control_mode: Optional[int] = (
-            autoware_vehicle_msgs.ControlModeReport.NO_COMMAND
-        )
+        self._vehicle_state: int | None = None
+        self._control_mode: int | None = autoware_vehicle_msgs.ControlModeReport.NO_COMMAND
         self._operation_mode_state = None
         self._autoware_motion_state = None
         self._route_state = None
-        self._current_gear: Optional[int] = autoware_vehicle_msgs.GearCommand.NONE
+        self._current_gear: int | None = autoware_vehicle_msgs.GearCommand.NONE
         self._latest_control: autoware_control_msgs.Control = None
         self._latest_control_stamp = 0
         self._kinematic: ObjectKinematic = ObjectKinematic()
         self._quit_flag: bool = False
-        self._last_error: Optional[str] = None
-        self._agents: List[ObjectState] = []
+        self._last_error: str | None = None
+        self._agents: list[ObjectState] = []
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -185,17 +174,13 @@ class AutowarePureAV:
         self._launch_autoware()
 
         # Wait AD API services ready
-        self._wait_for_service(
-            self._client_initial_localization, "InitializeLocalization"
-        )
+        self._wait_for_service(self._client_initial_localization, "InitializeLocalization")
         self._wait_for_service(self._client_set_route_points, "SetRoutePoints")
         self._wait_for_service(self._client_change_to_auto, "ChangeOperationMode")
 
         if self._quit_flag:
             self.stop()
-            raise RuntimeError(
-                f"AutowarePureAV init failed: {self._last_error or 'unknown error'}"
-            )
+            raise RuntimeError(f"AutowarePureAV init failed: {self._last_error or 'unknown error'}")
 
         logger.info(f"Launching Autoware... (Current state: {self._vehicle_state})")
         logger.info("Autoware AV initialized and Autoware stack is ready.")
@@ -204,7 +189,7 @@ class AutowarePureAV:
         self,
         output_related: str,
         sps: ScenarioPack,
-        init_obs: Optional[list[ObjectState]] = None,
+        init_obs: list[ObjectState] | None = None,
     ) -> CtrlCmd:
         """
         Reset AV internal state when simulator resets.
@@ -221,15 +206,11 @@ class AutowarePureAV:
         # If the map has changed, restart Autoware process
         map_changed = self._setup_sps(sps)
         if map_changed:
-            logger.info(
-                f"Scenario uses new map_path={self._map_path}, restarting Autoware..."
-            )
+            logger.info(f"Scenario uses new map_path={self._map_path}, restarting Autoware...")
             self._stop_autoware_process()
             self._launch_autoware()
 
-            self._wait_for_service(
-                self._client_initial_localization, "InitializeLocalization"
-            )
+            self._wait_for_service(self._client_initial_localization, "InitializeLocalization")
             self._wait_for_service(self._client_set_route_points, "SetRoutePoints")
             self._wait_for_service(self._client_change_to_auto, "ChangeOperationMode")
 
@@ -271,32 +252,24 @@ class AutowarePureAV:
         start = time.time()
         while (
             self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE
-            and self._vehicle_state
-            != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
+            and self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
             and time.time() - start < self._timeout_sec
         ):
-            logger.info(
-                f"Waiting for autoware localization... state:{self._vehicle_state} "
-            )
+            logger.info(f"Waiting for autoware localization... state:{self._vehicle_state} ")
             time.sleep(0.1)
 
         # Check if localization is ready
         if (
             self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE
-            and self._vehicle_state
-            != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
+            and self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
         ):
             logger.error("Autoware localization initialization timed out.")
             self._quit_flag = True
             self._last_error = "Autoware localization initialization timed out."
-            raise LocalizationTimeoutError(
-                "Autoware localization initialization timed out."
-            )
+            raise LocalizationTimeoutError("Autoware localization initialization timed out.")
 
         # 2) routing
-        logger.info(
-            f"Setting Autoware route points... (Current state: {self._vehicle_state})"
-        )
+        logger.info(f"Setting Autoware route points... (Current state: {self._vehicle_state})")
         try:
             # wait a bit for autoware to be fully ready after localization before setting route
             time.sleep(1.0)
@@ -307,10 +280,8 @@ class AutowarePureAV:
             raise RuntimeError("Failed to set Autoware route points.") from e
 
         start = time.time()
-        while (
-            self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE
-        ):
-            logger.info(f"Waiting for autoware to set route... ")
+        while self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE:
+            logger.info("Waiting for autoware to set route... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware set route timed out."
                 logger.error(self._last_error)
@@ -320,7 +291,7 @@ class AutowarePureAV:
 
         start = time.time()
         while self._vehicle_state == autoware_system_msgs.AutowareState.PLANNING:
-            logger.info(f"Waiting for autoware planning... ")
+            logger.info("Waiting for autoware planning... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware planning timed out."
                 logger.error(self._last_error)
@@ -335,7 +306,7 @@ class AutowarePureAV:
             or not self._operation_mode_state.is_autonomous_mode_available
             or self._operation_mode_state.is_in_transition
         ):
-            logger.info(f"Waiting for autoware to be ready to engage... ")
+            logger.info("Waiting for autoware to be ready to engage... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware ready to engage timed out."
                 logger.error(self._last_error)
@@ -366,9 +337,7 @@ class AutowarePureAV:
             self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
             and self._vehicle_state != autoware_system_msgs.AutowareState.DRIVING
         ):
-            logger.warning(
-                f"Autoware not in driving mode, current state: {self._vehicle_state}"
-            )
+            logger.warning(f"Autoware not in driving mode, current state: {self._vehicle_state}")
             return CtrlCmd(mode=CtrlMode.NONE)
 
         # First step: change to autonomous mode
@@ -380,14 +349,12 @@ class AutowarePureAV:
             except RuntimeError as e:
                 self._quit_flag = True
                 self._last_error = str(e)
-                raise RuntimeError(
-                    "Failed to change Autoware to autonomous mode."
-                ) from e
+                raise RuntimeError("Failed to change Autoware to autonomous mode.") from e
 
             # Wait for change to autonomous
             start = time.time()
             while self._vehicle_state != autoware_system_msgs.AutowareState.DRIVING:
-                logger.info(f"Waiting for autoware to enter autonomous mode... ")
+                logger.info("Waiting for autoware to enter autonomous mode... ")
                 if time.time() - start > self._timeout_sec:
                     self._last_error = "Autoware change to autonomous mode timed out."
                     logger.error(self._last_error)
@@ -417,17 +384,14 @@ class AutowarePureAV:
             while time.time() < deadline:
                 if (
                     self._latest_control is not None
-                    and self._latest_control.stamp.sec * 1e9
-                    + self._latest_control.stamp.nanosec
+                    and self._latest_control.stamp.sec * 1e9 + self._latest_control.stamp.nanosec
                     > self._latest_control_stamp
                 ):
                     break
                 time.sleep(0.001)
 
         if self._latest_control is None:
-            logger.warning(
-                "No control message received from Autoware, returning zero Ctrl"
-            )
+            logger.warning("No control message received from Autoware, returning zero Ctrl")
             return CtrlCmd(mode=CtrlMode.NONE)
 
         # Apply control
@@ -758,20 +722,23 @@ class AutowarePureAV:
             launch_dummy_diag_publisher:=true \
             enable_all_modules_auto_mode:=true \
             is_simulation:=true \
-            rviz:={'false' if self._headless else 'true'} \
+            rviz:={"false" if self._headless else "true"} \
             """,
         ]
         launch_parts.extend(self._extra_launch_args)
 
         full_cmd = " && ".join(launch_parts)
         logger.info(f"Launching Autoware: {full_cmd}")
-        log = open(self._autoware_log_path, "wb", buffering=0)
-        self._autoware_proc = subprocess.Popen(
-            ["bash", "-lc", full_cmd],
-            stdout=log,
-            stderr=log,
-            preexec_fn=os.setsid,
-        )
+        # subprocess.Popen dups the file descriptor into the child, so
+        # closing the parent handle here doesn't disrupt the long-running
+        # Autoware process — `with` is safe and avoids the leak.
+        with open(self._autoware_log_path, "wb", buffering=0) as log:
+            self._autoware_proc = subprocess.Popen(
+                ["bash", "-lc", full_cmd],
+                stdout=log,
+                stderr=log,
+                preexec_fn=os.setsid,
+            )
 
     def _stop_autoware_process(self) -> None:
         """
@@ -793,9 +760,7 @@ class AutowarePureAV:
             self._autoware_proc.wait(timeout=5.0)
 
         except subprocess.TimeoutExpired:
-            logger.warning(
-                "Autoware did not terminate gracefully killing process group..."
-            )
+            logger.warning("Autoware did not terminate gracefully killing process group...")
             os.killpg(pgid, signal.SIGKILL)
 
         except ProcessLookupError:
@@ -820,9 +785,7 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     # AD API calls
     # ------------------------------------------------------------------
-    def _wait_for_service(
-        self, client, name: str, timeout_sec: Optional[float] = None
-    ) -> None:
+    def _wait_for_service(self, client, name: str, timeout_sec: float | None = None) -> None:
         timeout = timeout_sec or self._timeout_sec
         start = time.time()
         while not client.wait_for_service(timeout_sec=1.0):
@@ -893,7 +856,9 @@ class AutowarePureAV:
             status_msg = getattr(res.status, "message", None) if res else "no response"
             code = getattr(res.status, "code", "unknown") if res else "no response"
             succ = getattr(res.status, "success", "unknown") if res else "no response"
-            msg = f"InitializeLocalization failed: code={code}, success={succ}, message={status_msg}"
+            msg = (
+                f"InitializeLocalization failed: code={code}, success={succ}, message={status_msg}"
+            )
             raise RuntimeError(msg)
 
         logger.debug("Called InitializeLocalization service.")
@@ -945,9 +910,7 @@ class AutowarePureAV:
             status_msg = getattr(res.status, "message", None) if res else "no response"
             code = getattr(res.status, "code", "unknown") if res else "no response"
             succ = getattr(res.status, "success", "unknown") if res else "no response"
-            msg = (
-                f"ClearRoute failed: code={code}, success={succ}, message={status_msg}"
-            )
+            msg = f"ClearRoute failed: code={code}, success={succ}, message={status_msg}"
             raise RuntimeError(msg)
 
     def _call_change_to_stop(self) -> None:
@@ -1014,9 +977,7 @@ class AutowarePureAV:
         accel.header.stamp = now
         accel.header.frame_id = "base_link"
         accel.accel.accel.linear.x = self._kinematic.acceleration
-        accel.accel.accel.angular.z = self._sim_yaw_rate_to_ros(
-            self._kinematic.yaw_acceleration
-        )
+        accel.accel.accel.angular.z = self._sim_yaw_rate_to_ros(self._kinematic.yaw_acceleration)
         self._accel_pub.publish(accel)
 
     def _publish_dynamic_objects(self, t: rclpy.time.Time) -> None:
@@ -1069,9 +1030,7 @@ class AutowarePureAV:
             # 4. Kinematics
             kin = autoware_perception_msgs.DetectedObjectKinematics()
 
-            kin.orientation_availability = (
-                2  # (0:UNAVAILABLE, 1:SIGN_UNKNOWN, 2:AVAILABLE)
-            )
+            kin.orientation_availability = 2  # (0:UNAVAILABLE, 1:SIGN_UNKNOWN, 2:AVAILABLE)
             kin.has_position_covariance = True
 
             # Pose
@@ -1199,11 +1158,7 @@ class AutowarePureAV:
         msg = autoware_vehicle_msgs.SteeringReport()
         msg.stamp = t.to_msg()
         # TODO: This should be obtained from vehicle state
-        angle = (
-            self._latest_control.lateral.steering_tire_angle
-            if self._latest_control
-            else 0.0
-        )
+        angle = self._latest_control.lateral.steering_tire_angle if self._latest_control else 0.0
         msg.steering_tire_angle = angle
         self._steering_report_pub.publish(msg)
 
@@ -1247,16 +1202,12 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     def _prepare_control_payload(self) -> CtrlCmd:
         if self._latest_control is None:
-            logger.warning(
-                "No control message received from Autoware, returning zero Ctrl"
-            )
+            logger.warning("No control message received from Autoware, returning zero Ctrl")
             return CtrlCmd(mode=CtrlMode.NONE)
 
         steer = float(self._latest_control.lateral.steering_tire_angle)
         if bool(self._latest_control.lateral.is_defined_steering_tire_rotation_rate):
-            steer_speed = float(
-                self._latest_control.lateral.steering_tire_rotation_rate
-            )
+            steer_speed = float(self._latest_control.lateral.steering_tire_rotation_rate)
         else:
             steer_speed = 0.0
 
@@ -1287,9 +1238,7 @@ class AutowarePureAV:
         if not map_full_path.exists():
             raise FileNotFoundError(f"Autoware map file not found: {map_full_path}")
         if map_full_path.suffix.lower() != ".osm":
-            raise ValueError(
-                f"Autoware map file must be .osm format, got: {map_full_path}"
-            )
+            raise ValueError(f"Autoware map file must be .osm format, got: {map_full_path}")
         is_changed = self._map_path != map_full_path
         self._map_path = map_full_path
         return is_changed
