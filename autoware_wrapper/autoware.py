@@ -729,16 +729,16 @@ class AutowarePureAV:
 
         full_cmd = " && ".join(launch_parts)
         logger.info(f"Launching Autoware: {full_cmd}")
-        # Log handle is intentionally leaked so the long-running Autoware
-        # subprocess can keep writing past this scope; SIM115 wants
-        # `with open(...)` which would close the file too early.
-        log = open(self._autoware_log_path, "wb", buffering=0)  # noqa: SIM115
-        self._autoware_proc = subprocess.Popen(  # noqa: SIM115
-            ["bash", "-lc", full_cmd],
-            stdout=log,
-            stderr=log,
-            preexec_fn=os.setsid,
-        )
+        # subprocess.Popen dups the file descriptor into the child, so
+        # closing the parent handle here doesn't disrupt the long-running
+        # Autoware process — `with` is safe and avoids the leak.
+        with open(self._autoware_log_path, "wb", buffering=0) as log:
+            self._autoware_proc = subprocess.Popen(
+                ["bash", "-lc", full_cmd],
+                stdout=log,
+                stderr=log,
+                preexec_fn=os.setsid,
+            )
 
     def _stop_autoware_process(self) -> None:
         """
