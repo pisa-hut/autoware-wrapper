@@ -255,7 +255,7 @@ class AutowarePureAV:
             and self._vehicle_state != autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
             and time.time() - start < self._timeout_sec
         ):
-            logger.info(f"Waiting for autoware localization... state:{self._vehicle_state} ")
+            logger.debug(f"Waiting for autoware localization... state:{self._vehicle_state} ")
             time.sleep(0.1)
 
         # Check if localization is ready
@@ -281,7 +281,7 @@ class AutowarePureAV:
 
         start = time.time()
         while self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE:
-            logger.info("Waiting for autoware to set route... ")
+            logger.debug("Waiting for autoware to set route... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware set route timed out."
                 logger.error(self._last_error)
@@ -291,7 +291,7 @@ class AutowarePureAV:
 
         start = time.time()
         while self._vehicle_state == autoware_system_msgs.AutowareState.PLANNING:
-            logger.info("Waiting for autoware planning... ")
+            logger.debug("Waiting for autoware planning... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware planning timed out."
                 logger.error(self._last_error)
@@ -306,7 +306,7 @@ class AutowarePureAV:
             or not self._operation_mode_state.is_autonomous_mode_available
             or self._operation_mode_state.is_in_transition
         ):
-            logger.info("Waiting for autoware to be ready to engage... ")
+            logger.debug("Waiting for autoware to be ready to engage... ")
             if time.time() - start > self._timeout_sec:
                 self._last_error = "Autoware ready to engage timed out."
                 logger.error(self._last_error)
@@ -354,7 +354,7 @@ class AutowarePureAV:
             # Wait for change to autonomous
             start = time.time()
             while self._vehicle_state != autoware_system_msgs.AutowareState.DRIVING:
-                logger.info("Waiting for autoware to enter autonomous mode... ")
+                logger.debug("Waiting for autoware to enter autonomous mode... ")
                 if time.time() - start > self._timeout_sec:
                     self._last_error = "Autoware change to autonomous mode timed out."
                     logger.error(self._last_error)
@@ -794,7 +794,7 @@ class AutowarePureAV:
                 self._last_error = msg
                 self._quit_flag = True
                 raise RuntimeError(msg)
-            logger.info(f"Waiting for Autoware service {name}...")
+            logger.debug(f"Waiting for Autoware service {name}...")
         logger.info(f"Service {name} is available.")
 
     def _call_initialize_localization(self, sps: ScenarioPack) -> None:

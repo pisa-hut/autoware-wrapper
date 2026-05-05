@@ -1,5 +1,4 @@
 import logging
-from pprint import pprint
 
 import grpc
 from autoware import AutowarePureAV
@@ -29,7 +28,7 @@ class AVServer(BaseAvServer):
         config = MessageToDict(request.config.config)
         output_dir = request.output_dir.path
         map_name = request.map_name
-        pprint(config)
+        logger.debug(f"Init config: {config}")
 
         self._av = AutowarePureAV(output_dir, config)
         self._av.init(map_name)
