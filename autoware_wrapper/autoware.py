@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import autoware_adapi_v1_msgs.msg as autoware_adapi_v1_msgs
@@ -25,9 +26,19 @@ from exception.av import (
     PlanningTimeoutError,
     RouteError,
 )
-from pisa_api.control_pb2 import CtrlCmd, CtrlMode
-from pisa_api.object_pb2 import ObjectKinematic, ObjectState, RoadObjectType, ShapeType
-from pisa_api.scenario_pb2 import ScenarioPack
+from pisa_api.av import (
+    AvUnavailable,
+    ControlCommand,
+    ControlMode,
+    InitRequest,
+    ObjectKinematicData,
+    ObjectStateData,
+    ResetRequest,
+    RoadObjectType,
+    ScenarioPackData,
+    ShapeType,
+    StepRequest,
+)
 from publish_manager import PublishManager, PublishMode, TopicPublisher
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -62,7 +73,59 @@ class AutowarePureAV:
     - should_quit(): Decide whether to quit based on motion state / error / process status
     """
 
-    def __init__(self, output_base: str, cfg: dict):
+    def __init__(self, output_base: str | Path = ".", cfg: dict | None = None):
+        self._configure(output_base, cfg or {})
+
+        # ScenarioPack
+        self._sps: ScenarioPackData | None = None
+        self._map_path: Path | None = None
+
+        # —— Autoware process & ROS node status ——
+        self._autoware_proc: subprocess.Popen | None = None
+        self._node: Node | None = None
+        self._executor: MultiThreadedExecutor | None = None
+        self._spin_thread: threading.Thread | None = None
+
+        # pub / sub / services
+        self._publish_manager = PublishManager()
+        self._kinematic_state_pub = None
+        self._accel_pub = None
+        self._objects_pub = None
+        self._dummy_pointcloud_pub = None
+        self._control_mode_pub = None
+        self._gear_report_pub = None
+        self._steering_report_pub = None
+        self._velocity_report_pub = None
+        self._occupancy_grid_pub = None
+        self._tf_broadcaster = None
+        self._control_sub = None
+        self._gear_cmd_sub = None
+        self._autoware_state_sub = None
+        self._client_initial_localization = None
+        self._client_set_route_points = None
+        self._client_change_to_auto = None
+
+        # Adapter internal state
+        self._initialized: bool = False
+
+        self._base_time_ns: int = 0  # time at sim_time == 0 (nanoseconds)
+        self._sim_time_ns: int = 0  # time at current sim step (nanoseconds)
+        self._current_ros_time_ns: int = 0  # current ROS time (nanoseconds)
+
+        self._vehicle_state: int | None = None
+        self._control_mode: int | None = autoware_vehicle_msgs.ControlModeReport.NO_COMMAND
+        self._operation_mode_state = None
+        self._autoware_motion_state = None
+        self._route_state = None
+        self._current_gear: int | None = autoware_vehicle_msgs.GearCommand.NONE
+        self._latest_control: autoware_control_msgs.Control = None
+        self._latest_control_stamp = 0
+        self._kinematic: ObjectKinematicData = ObjectKinematicData()
+        self._quit_flag: bool = False
+        self._last_error: str | None = None
+        self._agents: list[ObjectStateData] = []
+
+    def _configure(self, output_base: str | Path, cfg: dict) -> None:
         self._output_base = Path(output_base)
         self._output_dir = self._output_base / "concrete"
         os.makedirs(self._output_dir, exist_ok=True)
@@ -109,66 +172,18 @@ class AutowarePureAV:
                 self._yaw_sign,
             )
 
-        # ScenarioPack
-        self._sps: ScenarioPack | None = None
-        self._map_path: Path | None = None
-
-        # —— Autoware process & ROS node status ——
-        self._autoware_proc: subprocess.Popen | None = None
-        self._node: Node | None = None
-        self._executor: MultiThreadedExecutor | None = None
-        self._spin_thread: threading.Thread | None = None
-
-        # pub / sub / services
-        self._publish_manager = PublishManager()
-        self._kinematic_state_pub = None
-        self._accel_pub = None
-        self._objects_pub = None
-        self._dummy_pointcloud_pub = None
-        self._control_mode_pub = None
-        self._gear_report_pub = None
-        self._steering_report_pub = None
-        self._velocity_report_pub = None
-        self._occupancy_grid_pub = None
-        self._tf_broadcaster = None
-        self._control_sub = None
-        self._gear_cmd_sub = None
-        self._autoware_state_sub = None
-        self._client_initial_localization = None
-        self._client_set_route_points = None
-        self._client_change_to_auto = None
-
-        # Adapter internal state
-        self._initialized: bool = False
-
-        self._base_time_ns: int = 0  # time at sim_time == 0 (nanoseconds)
-        self._sim_time_ns: int = 0  # time at current sim step (nanoseconds)
-        self._current_ros_time_ns: int = 0  # current ROS time (nanoseconds)
-
-        self._vehicle_state: int | None = None
-        self._control_mode: int | None = autoware_vehicle_msgs.ControlModeReport.NO_COMMAND
-        self._operation_mode_state = None
-        self._autoware_motion_state = None
-        self._route_state = None
-        self._current_gear: int | None = autoware_vehicle_msgs.GearCommand.NONE
-        self._latest_control: autoware_control_msgs.Control = None
-        self._latest_control_stamp = 0
-        self._kinematic: ObjectKinematic = ObjectKinematic()
-        self._quit_flag: bool = False
-        self._last_error: str | None = None
-        self._agents: list[ObjectState] = []
-
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
-    def init(self, map_name: str) -> None:
+    def init(self, request: InitRequest) -> None:
         """
         - ROS node + spin thread
         - Launch Autoware (subprocess)
         - Wait for API services ready
         """
+        self._configure(request.output_dir, request.config)
 
-        self._set_map(map_name)
+        self._set_map(request.map_name)
         self._ensure_ros_node()
 
         self._launch_autoware()
@@ -185,12 +200,13 @@ class AutowarePureAV:
         logger.info(f"Launching Autoware... (Current state: {self._vehicle_state})")
         logger.info("Autoware AV initialized and Autoware stack is ready.")
 
-    def reset(
-        self,
-        output_related: str,
-        sps: ScenarioPack,
-        init_obs: list[ObjectState] | None = None,
-    ) -> CtrlCmd:
+    def reset(self, request: ResetRequest) -> ControlCommand:
+        try:
+            return self._reset(request)
+        except (LocalizationTimeoutError, PlanningTimeoutError, RouteError) as e:
+            raise AvUnavailable(str(e)) from e
+
+    def _reset(self, request: ResetRequest) -> ControlCommand:
         """
         Reset AV internal state when simulator resets.
 
@@ -198,6 +214,10 @@ class AutowarePureAV:
         2. Call InitializeLocalization service to set initial pose
         3. Call SetRoutePoints service to set route
         """
+        output_related = request.output_dir
+        sps = request.scenario_pack
+        init_obs = request.initial_observation
+
         logger.info("Setting timeout sec = %.2f", self._timeout_sec)
         self._output_dir = self._output_base / output_related
 
@@ -224,7 +244,7 @@ class AutowarePureAV:
         self._current_gear = autoware_vehicle_msgs.GearCommand.NONE
         self._quit_flag = False
         self._last_error = None
-        self._kinematic = ObjectKinematic()
+        self._kinematic = ObjectKinematicData()
         self._agents = []
 
         try:
@@ -233,9 +253,12 @@ class AutowarePureAV:
             self._last_error = str(e)
             logger.warning(f"Error while stopping Autoware vehicle: {self._last_error}")
 
-        self._kinematic = ObjectKinematic()
+        if not init_obs:
+            raise ValueError("Reset requires at least one object state for ego vehicle")
+
+        self._kinematic = ObjectKinematicData()
         init_kinematic = init_obs[0].kinematic
-        init_kinematic.time_ns = self._current_ros_time_ns
+        init_kinematic = replace(init_kinematic, time_ns=self._current_ros_time_ns)
         self._agents = init_obs[1:] if init_obs and len(init_obs) > 1 else []
         self._kinematic = init_kinematic
 
@@ -318,10 +341,13 @@ class AutowarePureAV:
 
         return self._prepare_control_payload()
 
-    def step(self, obs: list[ObjectState], time_stamp_ns: int) -> CtrlCmd:
+    def step(self, request: StepRequest) -> ControlCommand:
         """
         Step function called at every sim step.
         """
+        obs = request.observation
+        time_stamp_ns = request.timestamp_ns
+
         self._ensure_ros_node()
         self._sim_time_ns = time_stamp_ns
         self._current_ros_time_ns = self._base_time_ns + self._sim_time_ns
@@ -330,7 +356,7 @@ class AutowarePureAV:
         if self._vehicle_state == autoware_system_msgs.AutowareState.ARRIVED_GOAL:
             logger.info("Autoware has completed the route.")
             self._quit_flag = True
-            return CtrlCmd(mode=CtrlMode.NONE)
+            return ControlCommand(mode=ControlMode.NONE)
 
         # Check Autoware vehicle state
         if (
@@ -338,7 +364,7 @@ class AutowarePureAV:
             and self._vehicle_state != autoware_system_msgs.AutowareState.DRIVING
         ):
             logger.warning(f"Autoware not in driving mode, current state: {self._vehicle_state}")
-            return CtrlCmd(mode=CtrlMode.NONE)
+            return ControlCommand(mode=ControlMode.NONE)
 
         # First step: change to autonomous mode
         if self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE:
@@ -370,7 +396,7 @@ class AutowarePureAV:
         ego = obs[0]
         if ego is not None:
             cur_kinematic = ego.kinematic
-            cur_kinematic.time_ns = self._current_ros_time_ns
+            cur_kinematic = replace(cur_kinematic, time_ns=self._current_ros_time_ns)
             self._kinematic = cur_kinematic
 
         self._agents = obs[1:] if len(obs) > 1 else []
@@ -392,7 +418,7 @@ class AutowarePureAV:
 
         if self._latest_control is None:
             logger.warning("No control message received from Autoware, returning zero Ctrl")
-            return CtrlCmd(mode=CtrlMode.NONE)
+            return ControlCommand(mode=ControlMode.NONE)
 
         # Apply control
         self._latest_control_stamp = (
@@ -777,7 +803,7 @@ class AutowarePureAV:
             self._base_time_ns += int((1.0 / CLOCK_PUB_HZ) * 1e9)
             self._current_ros_time_ns = self._base_time_ns
 
-            self._kinematic.time_ns = self._current_ros_time_ns
+            self._kinematic = replace(self._kinematic, time_ns=self._current_ros_time_ns)
 
             now = Time(nanoseconds=self._current_ros_time_ns)
             self._publish_manager.publish_all(now)
@@ -797,7 +823,7 @@ class AutowarePureAV:
             logger.debug(f"Waiting for Autoware service {name}...")
         logger.info(f"Service {name} is available.")
 
-    def _call_initialize_localization(self, sps: ScenarioPack) -> None:
+    def _call_initialize_localization(self, sps: ScenarioPackData) -> None:
         assert self._node is not None
         now = Time(nanoseconds=self._current_ros_time_ns).to_msg()
 
@@ -863,7 +889,7 @@ class AutowarePureAV:
 
         logger.debug("Called InitializeLocalization service.")
 
-    def _call_set_route_points(self, sps: ScenarioPack) -> None:
+    def _call_set_route_points(self, sps: ScenarioPackData) -> None:
         assert self._node is not None
         req = autoware_adapi_v1_msgs_srv.SetRoutePoints.Request()
         req.header.frame_id = "map"
@@ -1003,6 +1029,10 @@ class AutowarePureAV:
             # 3. Shape
             shp = autoware_perception_msgs.Shape()
 
+            if ag.shape is None:
+                logger.warning("Skipping dynamic object without shape")
+                continue
+
             if ag.shape.type == ShapeType.CYLINDER:
                 shp.type = autoware_perception_msgs.Shape.CYLINDER
             elif ag.shape.type == ShapeType.BOUNDING_BOX:
@@ -1017,7 +1047,7 @@ class AutowarePureAV:
                 shp.dimensions.y = ag.shape.dimensions.y
                 shp.dimensions.z = ag.shape.dimensions.z
             else:
-                for pt in ag.shape.polygon:
+                for pt in ag.shape.vertices:
                     p = geometry_msgs.Point32()
                     p.x = pt.x
                     p.y = pt.y
@@ -1200,10 +1230,10 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
-    def _prepare_control_payload(self) -> CtrlCmd:
+    def _prepare_control_payload(self) -> ControlCommand:
         if self._latest_control is None:
             logger.warning("No control message received from Autoware, returning zero Ctrl")
-            return CtrlCmd(mode=CtrlMode.NONE)
+            return ControlCommand(mode=ControlMode.NONE)
 
         steer = float(self._latest_control.lateral.steering_tire_angle)
         if bool(self._latest_control.lateral.is_defined_steering_tire_rotation_rate):
@@ -1231,7 +1261,7 @@ class AutowarePureAV:
         if jerk is not None:
             payload["jerk"] = jerk
 
-        return CtrlCmd(mode=CtrlMode.ACKERMANN, payload=payload)
+        return ControlCommand(mode=ControlMode.ACKERMANN, payload=payload)
 
     def _set_map(self, map_name: str) -> bool:
         map_full_path = Path(f"/mnt/map/osm/{map_name}.osm").resolve()
@@ -1243,7 +1273,7 @@ class AutowarePureAV:
         self._map_path = map_full_path
         return is_changed
 
-    def _setup_sps(self, sps: ScenarioPack) -> bool:
+    def _setup_sps(self, sps: ScenarioPackData) -> bool:
         """
         Update map path from ScenarioPack.
         Return True if map path has changed.

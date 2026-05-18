@@ -4,20 +4,14 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.10.*"
-dependencies = [
-    "numpy>=2.2.6",
-    "pyyaml>=6.0.3",
-    "pisa-api>=0.2.0",
-]
+dependencies = ["numpy>=2.2.6", "pyyaml>=6.0.3", "pisa-api>=0.2.0"]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.0",
-    "ruff>=0.6",
-]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [tool.uv.sources]
 pisa-api = { git = "https://github.com/pisa-hut/pisa-api.git" }
+
 
 [tool.ruff]
 line-length = 100
