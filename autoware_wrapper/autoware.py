@@ -149,8 +149,6 @@ class AutowarePureAV:
 
     def _configure(self, output_base: str | Path, cfg: dict) -> None:
         self._output_base = Path(output_base)
-        self._output_dir = self._output_base / "concrete"
-        os.makedirs(self._output_dir, exist_ok=True)
 
         self.config = cfg
         self._autoware_cfg = cfg.get("autoware", {})
@@ -251,9 +249,12 @@ class AutowarePureAV:
         sps = request.scenario_pack
         init_obs = request.initial_observation
 
-        logger.info("Setting timeout sec = %.2f", self._timeout_sec)
+        logger.debug("Setting timeout sec = %.2f", self._timeout_sec)
         reset_started = time.monotonic()
         self._output_dir = self._output_base / output_related
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._autoware_log_path = self._output_dir / self._autoware_log_path.name
+        logger.debug("Output dir: %s", self._output_dir)
 
         self._ensure_ros_node()
 
@@ -286,7 +287,7 @@ class AutowarePureAV:
         self._log_elapsed("reset.relaunch_autoware", stage_started)
 
         # 1) localization
-        logger.info(f"Initializing Autoware... (Current state: {self._vehicle_state})")
+        logger.info("Initializing Autoware localization...")
         stage_started = time.monotonic()
         try:
             self._call_initialize_localization(sps)
@@ -297,6 +298,7 @@ class AutowarePureAV:
         self._log_elapsed("reset.initialize_localization.call", stage_started)
 
         # Wait for localization to be ready
+        logger.info("Waiting for Autoware localization...")
         stage_started = time.monotonic()
         start = time.time()
         while (
@@ -319,7 +321,7 @@ class AutowarePureAV:
         self._log_elapsed("reset.initialize_localization.wait", stage_started)
 
         # 2) routing
-        logger.info(f"Setting Autoware route points... (Current state: {self._vehicle_state})")
+        logger.info("Setting Autoware route points...")
         stage_started = time.monotonic()
         try:
             # wait a bit for autoware to be fully ready after localization before setting route
@@ -331,6 +333,7 @@ class AutowarePureAV:
             raise RuntimeError("Failed to set Autoware route points.") from e
         self._log_elapsed("reset.set_route.call", stage_started)
 
+        logger.info("Waiting for Autoware route...")
         stage_started = time.monotonic()
         start = time.time()
         while self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE:
@@ -343,6 +346,7 @@ class AutowarePureAV:
             time.sleep(0.1)
         self._log_elapsed("reset.set_route.wait", stage_started)
 
+        logger.info("Waiting for Autoware planning...")
         stage_started = time.monotonic()
         start = time.time()
         while self._vehicle_state == autoware_system_msgs.AutowareState.PLANNING:
@@ -356,6 +360,7 @@ class AutowarePureAV:
         self._log_elapsed("reset.planning.wait", stage_started)
 
         # check operation mode state is_autonomous_mode_available == true and is_in_transition == False to ensure autoware is ready to engage
+        logger.info("Waiting for Autoware to be ready to engage...")
         stage_started = time.monotonic()
         start = time.time()
         while (
@@ -748,23 +753,27 @@ class AutowarePureAV:
             # break
 
     def _log_elapsed(self, label: str, started: float) -> None:
-        logger.info("%s took %.3fs", label, time.monotonic() - started)
+        logger.debug("%s took %.3fs", label, time.monotonic() - started)
 
     def _restart_autoware_stack(self) -> None:
+        logger.info("Stopping previous Autoware stack...")
         stage_started = time.monotonic()
         self._stop_autoware_process()
         self._log_elapsed("reset.stop_previous_autoware", stage_started)
 
         self._reset_autoware_observed_state()
 
+        logger.info("Launching new Autoware stack...")
         stage_started = time.monotonic()
         self._launch_autoware()
         self._log_elapsed("reset.launch_process", stage_started)
 
+        logger.info("Waiting for Autoware services...")
         stage_started = time.monotonic()
         self._wait_for_service(self._client_initial_localization, "InitializeLocalization")
         self._wait_for_service(self._client_set_route_points, "SetRoutePoints")
         self._wait_for_service(self._client_change_to_auto, "ChangeOperationMode")
+        logger.info("Autoware services are ready.")
         self._log_elapsed("reset.wait_services", stage_started)
 
     def _launch_autoware(self) -> None:
@@ -798,7 +807,7 @@ class AutowarePureAV:
         launch_parts.extend(self._extra_launch_args)
 
         full_cmd = " && ".join(launch_parts)
-        logger.info(f"Launching Autoware: {full_cmd}")
+        logger.debug("Launching Autoware: %s", full_cmd)
         # subprocess.Popen dups the file descriptor into the child, so
         # closing the parent handle here doesn't disrupt the long-running
         # Autoware process — `with` is safe and avoids the leak.
@@ -815,7 +824,7 @@ class AutowarePureAV:
         Stop Autoware process group quickly, with escalating signals if needed.
         """
         previous_nodes = self._list_autoware_ros_nodes()
-        logger.info("Found %d previous Autoware ROS nodes before shutdown.", len(previous_nodes))
+        logger.debug("Found %d previous Autoware ROS nodes before shutdown.", len(previous_nodes))
 
         if self._autoware_proc is None:
             stage_started = time.monotonic()
@@ -838,7 +847,7 @@ class AutowarePureAV:
             self._log_elapsed("reset.wait_ros_graph_cleanup", stage_started)
             return
 
-        logger.info("Stopping Autoware process group...")
+        logger.debug("Stopping Autoware process group...")
 
         try:
             if pgid is None:
@@ -886,20 +895,20 @@ class AutowarePureAV:
     ) -> None:
         assert self._autoware_proc is not None
 
-        logger.info("Sending %s to Autoware process group %s", label, pgid)
+        logger.debug("Sending %s to Autoware process group %s", label, pgid)
         with suppress(ProcessLookupError):
             os.killpg(pgid, sig)
 
         try:
             self._autoware_proc.wait(timeout=wait_sec)
-            logger.info("Autoware process exited after %s", label)
+            logger.debug("Autoware process exited after %s", label)
         except subprocess.TimeoutExpired as e:
             if sig == signal.SIGKILL:
                 msg = f"Autoware process did not exit after {label}"
                 self._last_error = msg
                 self._quit_flag = True
                 raise RuntimeError(msg) from e
-            logger.info("Autoware still running after %s grace %.2fs", label, wait_sec)
+            logger.debug("Autoware still running after %s grace %.2fs", label, wait_sec)
 
     def _wait_for_process_group_gone(self, pgid: int | None) -> None:
         if pgid is None:
@@ -910,7 +919,7 @@ class AutowarePureAV:
             try:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
-                logger.info("Autoware process group %s is gone.", pgid)
+                logger.debug("Autoware process group %s is gone.", pgid)
                 return
             time.sleep(0.1)
 
@@ -953,11 +962,11 @@ class AutowarePureAV:
         while time.time() < deadline:
             remaining = previous_nodes & self._list_autoware_ros_nodes()
             if not remaining:
-                logger.info("Previous Autoware ROS nodes have been removed from the graph.")
+                logger.debug("Previous Autoware ROS nodes have been removed from the graph.")
                 return
             now = time.time()
             if now >= next_log_time:
-                logger.info(
+                logger.debug(
                     "Waiting for %d previous Autoware ROS nodes to leave graph: %s",
                     len(remaining),
                     sorted(remaining),
@@ -1017,7 +1026,7 @@ class AutowarePureAV:
                 self._quit_flag = True
                 raise RuntimeError(msg)
             logger.debug(f"Waiting for Autoware service {name}...")
-        logger.info(f"Service {name} is available.")
+        logger.debug("Service %s is available.", name)
 
     def _call_initialize_localization(self, sps: ScenarioPackData) -> None:
         assert self._node is not None
@@ -1046,8 +1055,14 @@ class AutowarePureAV:
         pose_msg.pose.pose.position.x = float(self._kinematic.x)
         pose_msg.pose.pose.position.y = float(self._kinematic.y)
         pose_msg.pose.pose.position.z = float(self._kinematic.z)
-        logger.info(
-            f"Setting initial position: x={self._kinematic.x}, y={self._kinematic.y}, z={self._kinematic.z}, h_raw={self._kinematic.yaw}, h_ros={ego_yaw}, speed={self._kinematic.speed}"
+        logger.debug(
+            "Setting initial position: x=%s, y=%s, z=%s, h_raw=%s, h_ros=%s, speed=%s",
+            self._kinematic.x,
+            self._kinematic.y,
+            self._kinematic.z,
+            self._kinematic.yaw,
+            ego_yaw,
+            self._kinematic.speed,
         )
         qz, qw = self._yaw_to_quat(ego_yaw)
         pose_msg.pose.pose.orientation.z = qz
@@ -1150,7 +1165,7 @@ class AutowarePureAV:
             raise RuntimeError(msg)
 
     def _engage_autoware(self) -> None:
-        logger.info("Changing Autoware to autonomous mode...")
+        logger.info("Engaging Autoware autonomous mode...")
         try:
             self._call_change_to_autonomous()
             self._control_mode = autoware_vehicle_msgs.ControlModeReport.AUTONOMOUS
@@ -1171,7 +1186,7 @@ class AutowarePureAV:
             time.sleep(0.1)
 
         self._initialized = True
-        logger.info("Autoware is running...")
+        logger.info("Autoware is running.")
 
     def _call_change_to_autonomous(self) -> None:
         assert self._node is not None
@@ -1549,9 +1564,12 @@ class AutowarePureAV:
                 break
             time.sleep(0.1)
 
-        logger.info("Autoware vehicle stopped and route cleared.")
-        logger.info(
-            f"Current Autoware state: {self._vehicle_state}, motion state: {self._autoware_motion_state}, route state: {self._route_state}"
+        logger.debug("Autoware vehicle stopped and route cleared.")
+        logger.debug(
+            "Current Autoware state: %s, motion state: %s, route state: %s",
+            self._vehicle_state,
+            self._autoware_motion_state,
+            self._route_state,
         )
 
     @staticmethod
