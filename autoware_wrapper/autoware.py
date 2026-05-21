@@ -222,12 +222,10 @@ class AutowarePureAV:
         """
         self._configure(request.output_dir, request.config)
 
-        self._set_map(request.map_name)
         self._ensure_ros_node()
-
-        if self._quit_flag:
-            self.stop()
-            raise RuntimeError(f"AutowarePureAV init failed: {self._last_error or 'unknown error'}")
+        self._stop_autoware_process()
+        self._reset_adapter_state()
+        self._set_map(request.map_name)
 
         logger.info("Autoware AV initialized. Autoware stack will be launched on reset.")
 
@@ -940,22 +938,59 @@ class AutowarePureAV:
         if pgid is None:
             return
 
-        deadline = time.time() + self._process_group_cleanup_timeout_sec
+        if self._wait_for_process_group_exit(pgid, self._process_group_cleanup_timeout_sec):
+            return
+
+        members = self._process_group_members(pgid)
+        logger.warning(
+            "Autoware process group %s still has %d members after %.1fs cleanup: %s",
+            pgid,
+            len(members),
+            self._process_group_cleanup_timeout_sec,
+            members,
+        )
+        with suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)
+
+        if self._wait_for_process_group_exit(pgid, self._shutdown_kill_grace_sec):
+            return
+
+        msg = (
+            f"Autoware process group {pgid} still exists "
+            f"after SIGKILL shutdown cleanup: {self._process_group_members(pgid)}"
+        )
+        self._last_error = msg
+        self._quit_flag = True
+        raise RuntimeError(msg)
+
+    def _wait_for_process_group_exit(self, pgid: int, timeout_sec: float) -> bool:
+        deadline = time.time() + timeout_sec
         while time.time() < deadline:
             try:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
                 logger.debug("Autoware process group %s is gone.", pgid)
-                return
+                return True
             time.sleep(0.1)
+        return False
 
-        msg = (
-            f"Autoware process group {pgid} still exists "
-            f"after {self._process_group_cleanup_timeout_sec}s shutdown cleanup"
-        )
-        self._last_error = msg
-        self._quit_flag = True
-        raise RuntimeError(msg)
+    def _process_group_members(self, pgid: int) -> list[str]:
+        members: list[str] = []
+        for stat_path in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                stat = stat_path.read_text(encoding="utf-8")
+                fields = stat.rsplit(")", maxsplit=1)[1].split()
+                proc_pgid = int(fields[2])
+                if proc_pgid != pgid:
+                    continue
+
+                pid = stat_path.parent.name
+                comm = stat.split("(", maxsplit=1)[1].rsplit(")", maxsplit=1)[0]
+                state = fields[0]
+                members.append(f"{pid}:{comm}:{state}")
+            except (OSError, IndexError, ValueError):
+                continue
+        return members
 
     def _list_autoware_ros_nodes(self) -> set[str]:
         if self._node is None:
