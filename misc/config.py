@@ -236,6 +236,13 @@ RULES = [
         "param": "allow_reroute_in_autonomous_mode",
         "value": True,
     },
+    {
+        "name": "consider_no_drivable_lanes -> true",
+        "file": "/opt/autoware/share/autoware_launch/config/planning/mission_planning/mission_planner/mission_planner.param.yaml",
+        "type": "rosparam",
+        "param": "consider_no_drivable_lanes",
+        "value": True,
+    }
 ]
 
 

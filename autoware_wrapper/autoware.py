@@ -256,7 +256,7 @@ class AutowarePureAV:
         self._restart_autoware_stack()
         self._log_elapsed("reset.relaunch_autoware", stage_started)
 
-        self._initialize_localization_for_reset(sps)
+        self._initialize_localization_for_reset()
         self._set_route_for_reset(sps)
         self._wait_for_planning_ready()
         self._engage_autoware()
@@ -300,11 +300,11 @@ class AutowarePureAV:
         self._agents = []
         self._reset_autoware_observed_state()
 
-    def _initialize_localization_for_reset(self, sps: ScenarioPackData) -> None:
+    def _initialize_localization_for_reset(self) -> None:
         logger.info("Initializing Autoware localization...")
         stage_started = time.monotonic()
         try:
-            self._call_initialize_localization(sps)
+            self._call_initialize_localization()
         except RuntimeError as e:
             self._quit_flag = True
             self._last_error = str(e)
@@ -1089,7 +1089,7 @@ class AutowarePureAV:
             logger.debug(f"Waiting for Autoware service {name}...")
         logger.debug("Service %s is available.", name)
 
-    def _call_initialize_localization(self, sps: ScenarioPackData) -> None:
+    def _call_initialize_localization(self) -> None:
         assert self._node is not None
         now = Time(nanoseconds=self._current_ros_time_ns).to_msg()
 
