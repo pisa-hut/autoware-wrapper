@@ -242,7 +242,7 @@ RULES = [
         "type": "rosparam",
         "param": "consider_no_drivable_lanes",
         "value": True,
-    }
+    },
 ]
 
 

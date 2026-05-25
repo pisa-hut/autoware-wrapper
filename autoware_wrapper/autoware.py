@@ -195,9 +195,7 @@ class AutowarePureAV:
         self._ros_graph_best_effort_wait_sec = float(
             self._rt_cfg.get("ros_graph_best_effort_wait_sec", 1.0)
         )
-        self._require_ros_graph_cleanup = bool(
-            self._rt_cfg.get("require_ros_graph_cleanup", False)
-        )
+        self._require_ros_graph_cleanup = bool(self._rt_cfg.get("require_ros_graph_cleanup", False))
         coord_cfg = self._autoware_cfg.get("coordinate_transform", {})
         self._yaw_sign = float(coord_cfg.get("yaw_sign", 1.0))
         yaw_offset_rad = coord_cfg.get("yaw_offset_rad", None)
@@ -378,8 +376,7 @@ class AutowarePureAV:
             timeout_message,
             error_type,
             debug_message=lambda: (
-                f"Waiting for Autoware state {expected_state}, "
-                f"current state: {self._vehicle_state}"
+                f"Waiting for Autoware state {expected_state}, current state: {self._vehicle_state}"
             ),
         )
 
