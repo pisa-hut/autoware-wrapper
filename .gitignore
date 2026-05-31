@@ -1,6 +1,6 @@
 .venv/
 **.py[cod]
-output/
+outputs/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
