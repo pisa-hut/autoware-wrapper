@@ -39,6 +39,7 @@ from pisa_api.av import (
     RoadObjectType,
     ScenarioPackData,
     ShapeType,
+    ShouldQuitResponse,
     StepRequest,
     StepResponse,
 )
@@ -498,22 +499,25 @@ class AutowarePureAV:
 
         logger.info("Autoware AV stopped.")
 
-    def should_quit(self) -> bool:
+    def should_quit(self) -> ShouldQuitResponse:
         """
         True if:
         - internal error / service failure happened (quit_flag set)
         - Autoware process exited unexpectedly
         """
         if self._quit_flag:
-            logger.info("AutowareAV.should_quit: quit_flag set")
-            return True
+            msg = self._last_error or "Autoware AV quit flag set"
+            logger.info("AutowareAV.should_quit: %s", msg)
+            return ShouldQuitResponse(should_quit=True, msg=msg)
 
         # Autoware process 狀態
         if self._autoware_proc is not None and self._autoware_proc.poll() is not None:
-            logger.info("Autoware process has exited unexpectedly.")
-            return True
+            return_code = self._autoware_proc.returncode
+            msg = f"Autoware process exited unexpectedly with return code {return_code}"
+            logger.info(msg)
+            return ShouldQuitResponse(should_quit=True, msg=msg)
 
-        return False
+        return ShouldQuitResponse(should_quit=False)
 
     # ------------------------------------------------------------------
     # ROS node / spin / process
@@ -1204,9 +1208,7 @@ class AutowarePureAV:
         res = fut.result()
         if res is None or not res.status.success:
             status_msg = getattr(res.status, "message", None) if res else "no response"
-            code = getattr(res.status, "code", "unknown") if res else "no response"
-            succ = getattr(res.status, "success", "unknown") if res else "no response"
-            msg = f"SetRoutePoints failed: code={code}, success={succ}, message={status_msg}"
+            msg = f"SetRoutePoints failed: message={status_msg}, start: ({self._kinematic.x}, {self._kinematic.y}, {self._kinematic.z}, {self._kinematic.yaw}), destination: ({goal.position.x}, {goal.position.y}, {goal.position.z}, {gp.world.h})"
             raise AvPreconditionFailed(msg)
 
     def _call_clear_route(self) -> None:
