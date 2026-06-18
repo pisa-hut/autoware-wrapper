@@ -166,6 +166,7 @@ class AutowarePureAV:
         self._launch_file = launch_cfg.get("file", "pisa.launch.xml")
         self._headless = bool(launch_cfg.get("headless", True))
         self._extra_launch_args: list[str] = list(launch_cfg.get("extra_args", []))
+        self._log_enabled = bool(launch_cfg.get("log", False))
         self._autoware_log_path = self._output_base / launch_cfg.get(
             "log_path", "autoware_launch.log"
         )
@@ -848,11 +849,19 @@ class AutowarePureAV:
         # subprocess.Popen dups the file descriptor into the child, so
         # closing the parent handle here doesn't disrupt the long-running
         # Autoware process — `with` is safe and avoids the leak.
-        with open(self._autoware_log_path, "wb", buffering=0) as log:
+        if self._log_enabled:
+            with open(self._autoware_log_path, "wb", buffering=0) as log:
+                self._autoware_proc = subprocess.Popen(
+                    ["bash", "-lc", full_cmd],
+                    stdout=log,
+                    stderr=log,
+                    preexec_fn=os.setsid,
+                )
+        else:
             self._autoware_proc = subprocess.Popen(
                 ["bash", "-lc", full_cmd],
-                stdout=log,
-                stderr=log,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid,
             )
 
