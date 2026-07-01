@@ -43,9 +43,7 @@ def test_agent_permutation_does_not_change_ego_or_detected_state_set() -> None:
     ego_b, agents_b = states_from_observation(ObservationData(ego=ego, agents=[second, first]))
 
     assert ego_a == ego_b == ego
-    assert {agent.kinematic.x for agent in agents_a} == {
-        agent.kinematic.x for agent in agents_b
-    }
+    assert {agent.kinematic.x for agent in agents_a} == {agent.kinematic.x for agent in agents_b}
 
 
 def test_new_disappearing_agents_follow_current_observation_only() -> None:
