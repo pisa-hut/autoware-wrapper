@@ -24,6 +24,7 @@ import nav_msgs.msg as nav_msgs
 import rclpy
 import rosgraph_msgs.msg as rosgraph_msgs
 import sensor_msgs.msg as sensor_msgs
+from geometry import compose_shape_center_pose, states_from_observation
 from pisa_api.av import (
     AvPreconditionFailed,
     AvTimeout,
@@ -34,6 +35,7 @@ from pisa_api.av import (
     InvalidAvRequest,
     ObjectKinematicData,
     ObjectStateData,
+    ObservationData,
     ResetRequest,
     ResetResponse,
     RoadObjectType,
@@ -271,7 +273,7 @@ class AutowarePureAV:
         self,
         output_related: str,
         sps: ScenarioPackData,
-        init_obs: list[ObjectStateData],
+        init_obs: ObservationData,
     ) -> None:
         logger.debug("Setting timeout sec = %.2f", self._timeout_sec)
         self._output_dir = self._output_base / output_related
@@ -282,12 +284,9 @@ class AutowarePureAV:
         self._ensure_ros_node()
         self._setup_sps(sps)
 
-        if not init_obs:
-            raise InvalidAvRequest("Reset requires at least one object state for ego vehicle")
-
         self._reset_adapter_state()
-        self._agents = init_obs[1:] if len(init_obs) > 1 else []
-        self._kinematic = replace(init_obs[0].kinematic, time_ns=self._current_ros_time_ns)
+        ego, self._agents = states_from_observation(init_obs)
+        self._kinematic = replace(ego.kinematic, time_ns=self._current_ros_time_ns)
 
     def _reset_adapter_state(self) -> None:
         self._initialized = False
@@ -436,8 +435,6 @@ class AutowarePureAV:
         time_stamp_ns = request.timestamp_ns
 
         self._ensure_ros_node()
-        if not obs:
-            raise InvalidAvRequest("Step requires at least one object state for ego vehicle")
         self._sim_time_ns = time_stamp_ns
         self._current_ros_time_ns = self._base_time_ns + self._sim_time_ns
 
@@ -453,11 +450,9 @@ class AutowarePureAV:
             return StepResponse(ctrl_cmd=ControlCommand(mode=ControlMode.NONE))
 
         # Update ego's kinematic state
-        ego = obs[0]
+        ego, self._agents = states_from_observation(obs)
         cur_kinematic = replace(ego.kinematic, time_ns=self._current_ros_time_ns)
         self._kinematic = cur_kinematic
-
-        self._agents = obs[1:] if len(obs) > 1 else []
 
         # publish
         now = Time(nanoseconds=self._current_ros_time_ns)
@@ -1393,12 +1388,18 @@ class AutowarePureAV:
             kin.has_position_covariance = True
 
             # Pose
-            kin.pose_with_covariance.pose.position.x = ag.kinematic.x
-            kin.pose_with_covariance.pose.position.y = ag.kinematic.y
-            kin.pose_with_covariance.pose.position.z = ag.kinematic.z
+            x, y, z, qx, qy, qz, qw = compose_shape_center_pose(
+                ag.kinematic,
+                ag.shape.center,
+                yaw_sign=self._yaw_sign,
+                yaw_offset_rad=self._yaw_offset_rad,
+            )
+            kin.pose_with_covariance.pose.position.x = x
+            kin.pose_with_covariance.pose.position.y = y
+            kin.pose_with_covariance.pose.position.z = z
 
-            yaw = self._sim_yaw_to_ros(ag.kinematic.yaw)
-            qz, qw = self._yaw_to_quat(yaw)
+            kin.pose_with_covariance.pose.orientation.x = qx
+            kin.pose_with_covariance.pose.orientation.y = qy
             kin.pose_with_covariance.pose.orientation.z = qz
             kin.pose_with_covariance.pose.orientation.w = qw
 
