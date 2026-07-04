@@ -84,7 +84,11 @@ def validate_ackermann_payload(payload: dict[str, float]) -> None:
     if not required <= payload.keys() or not payload.keys() <= allowed:
         raise ValueError("ACKERMANN payload contains missing or unknown fields")
     for name, value in payload.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
             raise ValueError(f"ACKERMANN {name} must be a finite number")
     if payload["speed"] < 0:
         raise ValueError("ACKERMANN speed must be non-negative")

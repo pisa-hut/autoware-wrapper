@@ -1501,9 +1501,7 @@ class AutowarePureAV:
         t.transform.translation.y = self._kinematic.y
         t.transform.translation.z = self._kinematic.z
 
-        t.transform.rotation.z, t.transform.rotation.w = self._yaw_to_quat(
-            self._kinematic.yaw
-        )
+        t.transform.rotation.z, t.transform.rotation.w = self._yaw_to_quat(self._kinematic.yaw)
 
         # publish
         self._tf_broadcaster.sendTransform(t)
