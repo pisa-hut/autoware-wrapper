@@ -10,7 +10,6 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import replace
 from pathlib import Path
 
 import autoware_adapi_v1_msgs.msg as autoware_adapi_v1_msgs
@@ -24,7 +23,12 @@ import nav_msgs.msg as nav_msgs
 import rclpy
 import rosgraph_msgs.msg as rosgraph_msgs
 import sensor_msgs.msg as sensor_msgs
-from geometry import compose_shape_center_pose, states_from_observation
+from geometry import (
+    ObservationContractError,
+    ObservationNormalizer,
+    compose_shape_center_pose,
+    validate_ackermann_payload,
+)
 from pisa_api.av import (
     AvPreconditionFailed,
     AvTimeout,
@@ -135,6 +139,7 @@ class AutowarePureAV:
         self._initialized: bool = False
 
         self._base_time_ns: int = 0  # time at sim_time == 0 (nanoseconds)
+        self._episode_ros_offset_ns: int = 0
         self._sim_time_ns: int = 0  # time at current sim step (nanoseconds)
         self._current_ros_time_ns: int = 0  # current ROS time (nanoseconds)
 
@@ -150,6 +155,8 @@ class AutowarePureAV:
         self._quit_flag: bool = False
         self._last_error: str | None = None
         self._agents: list[ObjectStateData] = []
+        self._observation_normalizer = ObservationNormalizer()
+        self._last_sim_timestamp_ns: int | None = None
 
     def _configure(self, output_base: str | Path, cfg: dict) -> None:
         self._output_base = Path(output_base)
@@ -200,19 +207,6 @@ class AutowarePureAV:
             self._rt_cfg.get("ros_graph_best_effort_wait_sec", 1.0)
         )
         self._require_ros_graph_cleanup = bool(self._rt_cfg.get("require_ros_graph_cleanup", False))
-        coord_cfg = self._autoware_cfg.get("coordinate_transform", {})
-        self._yaw_sign = float(coord_cfg.get("yaw_sign", 1.0))
-        yaw_offset_rad = coord_cfg.get("yaw_offset_rad", None)
-        yaw_offset_deg = coord_cfg.get("yaw_offset_deg", 0.0)
-        if yaw_offset_rad is None:
-            self._yaw_offset_rad = math.radians(float(yaw_offset_deg))
-        else:
-            self._yaw_offset_rad = float(yaw_offset_rad)
-        if not math.isclose(abs(self._yaw_sign), 1.0):
-            logger.warning(
-                "coordinate_transform.yaw_sign=%s is unusual, expected ±1.0",
-                self._yaw_sign,
-            )
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -265,6 +259,7 @@ class AutowarePureAV:
         self._set_route_for_reset(sps)
         self._wait_for_planning_ready()
         self._engage_autoware()
+        self._episode_ros_offset_ns = self._current_ros_time_ns
         self._log_elapsed("reset.total", reset_started)
 
         return ResetResponse(ctrl_cmd=self._prepare_control_payload())
@@ -285,12 +280,18 @@ class AutowarePureAV:
         self._setup_sps(sps)
 
         self._reset_adapter_state()
-        ego, self._agents = states_from_observation(init_obs)
-        self._kinematic = replace(ego.kinematic, time_ns=self._current_ros_time_ns)
+        self._observation_normalizer.reset()
+        try:
+            ego, self._agents = self._observation_normalizer.normalize(init_obs, 0)
+        except ObservationContractError as e:
+            raise InvalidAvRequest(str(e)) from e
+        self._kinematic = ego.kinematic
+        self._last_sim_timestamp_ns = 0
 
     def _reset_adapter_state(self) -> None:
         self._initialized = False
         self._base_time_ns = self._current_ros_time_ns
+        self._episode_ros_offset_ns = self._current_ros_time_ns
         self._sim_time_ns = 0
         self._latest_control = None
         self._latest_control_stamp = 0
@@ -300,6 +301,8 @@ class AutowarePureAV:
         self._last_error = None
         self._kinematic = ObjectKinematicData()
         self._agents = []
+        self._last_sim_timestamp_ns = None
+        self._observation_normalizer.reset()
         self._reset_autoware_observed_state()
 
     def _initialize_localization_for_reset(self) -> None:
@@ -435,8 +438,19 @@ class AutowarePureAV:
         time_stamp_ns = request.timestamp_ns
 
         self._ensure_ros_node()
+        if self._last_sim_timestamp_ns is None:
+            raise InvalidAvRequest("Step requires a successful Reset")
+        if time_stamp_ns < self._last_sim_timestamp_ns:
+            raise InvalidAvRequest(
+                f"Step timestamp {time_stamp_ns} precedes {self._last_sim_timestamp_ns}"
+            )
+        try:
+            ego, self._agents = self._observation_normalizer.normalize(obs, time_stamp_ns)
+        except ObservationContractError as e:
+            raise InvalidAvRequest(str(e)) from e
+        self._last_sim_timestamp_ns = time_stamp_ns
         self._sim_time_ns = time_stamp_ns
-        self._current_ros_time_ns = self._base_time_ns + self._sim_time_ns
+        self._current_ros_time_ns = self._episode_ros_offset_ns + self._sim_time_ns
 
         # Check if autoware is completed
         if self._vehicle_state == autoware_system_msgs.AutowareState.ARRIVED_GOAL:
@@ -450,9 +464,7 @@ class AutowarePureAV:
             return StepResponse(ctrl_cmd=ControlCommand(mode=ControlMode.NONE))
 
         # Update ego's kinematic state
-        ego, self._agents = states_from_observation(obs)
-        cur_kinematic = replace(ego.kinematic, time_ns=self._current_ros_time_ns)
-        self._kinematic = cur_kinematic
+        self._kinematic = ego.kinematic
 
         # publish
         now = Time(nanoseconds=self._current_ros_time_ns)
@@ -1086,8 +1098,6 @@ class AutowarePureAV:
             self._base_time_ns += int((1.0 / CLOCK_PUB_HZ) * 1e9)
             self._current_ros_time_ns = self._base_time_ns
 
-            self._kinematic = replace(self._kinematic, time_ns=self._current_ros_time_ns)
-
             now = Time(nanoseconds=self._current_ros_time_ns)
             self._publish_manager.publish_all(now)
 
@@ -1120,7 +1130,7 @@ class AutowarePureAV:
         t.transform.translation.z = float(self._kinematic.z)
 
         # Euler angle to quaternion
-        ego_yaw = self._sim_yaw_to_ros(self._kinematic.yaw)
+        ego_yaw = self._kinematic.yaw
         qz, qw = self._yaw_to_quat(ego_yaw)
         t.transform.rotation.z = qz
         t.transform.rotation.w = qw
@@ -1192,7 +1202,7 @@ class AutowarePureAV:
         goal.position.y = float(gp.world.y)
         goal.position.z = float(gp.world.z)
 
-        qz, qw = self._yaw_to_quat(self._sim_yaw_to_ros(gp.world.h))
+        qz, qw = self._yaw_to_quat(gp.world.h)
         goal.orientation.z = qz
         goal.orientation.w = qw
 
@@ -1311,13 +1321,13 @@ class AutowarePureAV:
         msg.pose.pose.position.y = self._kinematic.y
         msg.pose.pose.position.z = self._kinematic.z
 
-        yaw = self._sim_yaw_to_ros(self._kinematic.yaw)
+        yaw = self._kinematic.yaw
         qz, qw = self._yaw_to_quat(yaw)
         msg.pose.pose.orientation.z = qz
         msg.pose.pose.orientation.w = qw
 
         msg.twist.twist.linear.x = self._kinematic.speed
-        msg.twist.twist.angular.z = self._sim_yaw_rate_to_ros(self._kinematic.yaw_rate)
+        msg.twist.twist.angular.z = self._kinematic.yaw_rate
 
         self._kinematic_state_pub.publish(msg)
 
@@ -1327,7 +1337,7 @@ class AutowarePureAV:
         accel.header.stamp = now
         accel.header.frame_id = "base_link"
         accel.accel.accel.linear.x = self._kinematic.acceleration
-        accel.accel.accel.angular.z = self._sim_yaw_rate_to_ros(self._kinematic.yaw_acceleration)
+        accel.accel.accel.angular.z = self._kinematic.yaw_acceleration
         self._accel_pub.publish(accel)
 
     def _publish_dynamic_objects(self, t: rclpy.time.Time) -> None:
@@ -1391,8 +1401,6 @@ class AutowarePureAV:
             x, y, z, qx, qy, qz, qw = compose_shape_center_pose(
                 ag.kinematic,
                 ag.shape.center,
-                yaw_sign=self._yaw_sign,
-                yaw_offset_rad=self._yaw_offset_rad,
             )
             kin.pose_with_covariance.pose.position.x = x
             kin.pose_with_covariance.pose.position.y = y
@@ -1416,9 +1424,7 @@ class AutowarePureAV:
             # Twist
             kin.has_twist = True
             kin.twist_with_covariance.twist.linear.x = ag.kinematic.speed
-            kin.twist_with_covariance.twist.angular.z = self._sim_yaw_rate_to_ros(
-                ag.kinematic.yaw_rate
-            )
+            kin.twist_with_covariance.twist.angular.z = ag.kinematic.yaw_rate
 
             sigma_v = 0.02  # m/s
             sigma_w = 0.01  # rad/s
@@ -1496,7 +1502,7 @@ class AutowarePureAV:
         t.transform.translation.z = self._kinematic.z
 
         t.transform.rotation.z, t.transform.rotation.w = self._yaw_to_quat(
-            self._sim_yaw_to_ros(self._kinematic.yaw)
+            self._kinematic.yaw
         )
 
         # publish
@@ -1528,7 +1534,7 @@ class AutowarePureAV:
         msg.header.frame_id = "base_link"
         msg.longitudinal_velocity = self._kinematic.speed
         msg.lateral_velocity = 0.0
-        msg.heading_rate = self._sim_yaw_rate_to_ros(self._kinematic.yaw_rate)
+        msg.heading_rate = self._kinematic.yaw_rate
 
         self._velocity_report_pub.publish(msg)
 
@@ -1590,6 +1596,13 @@ class AutowarePureAV:
             payload["acceleration"] = acceleration
         if jerk is not None:
             payload["jerk"] = jerk
+
+        try:
+            validate_ackermann_payload(payload)
+        except ValueError as e:
+            self._last_error = str(e)
+            self._quit_flag = True
+            raise AvUnavailable(str(e)) from e
 
         return ControlCommand(mode=ControlMode.ACKERMANN, payload=payload)
 
@@ -1671,18 +1684,6 @@ class AutowarePureAV:
         cy = math.cos(yaw * 0.5)
         sy = math.sin(yaw * 0.5)
         return sy, cy
-
-    @staticmethod
-    def _normalize_yaw(yaw: float) -> float:
-        return math.atan2(math.sin(yaw), math.cos(yaw))
-
-    def _sim_yaw_to_ros(self, yaw: float) -> float:
-        yaw = self._normalize_yaw(yaw)
-        yaw = self._yaw_sign * yaw + self._yaw_offset_rad
-        return self._normalize_yaw(yaw)
-
-    def _sim_yaw_rate_to_ros(self, yaw_rate: float) -> float:
-        return self._yaw_sign * yaw_rate
 
     @staticmethod
     def _quat_to_yaw(q) -> float:
