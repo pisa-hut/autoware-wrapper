@@ -96,6 +96,11 @@ def validate_ackermann_payload(payload: dict[str, float]) -> None:
         raise ValueError("ACKERMANN steer_speed must be non-negative")
 
 
+def clamp_ackermann_speed(speed: float) -> float:
+    """Temporarily suppress Autoware reverse commands at the PISA boundary."""
+    return 0.0 if math.isfinite(speed) and speed < 0.0 else speed
+
+
 def _validate_state(
     state: ObjectStateData,
     timestamp_ns: int,

@@ -14,6 +14,7 @@ from pisa_api.av import (
 from autoware_wrapper.geometry import (
     ObservationContractError,
     ObservationNormalizer,
+    clamp_ackermann_speed,
     compose_shape_center_pose,
     validate_ackermann_payload,
 )
@@ -195,3 +196,9 @@ def test_ackermann_payload_validation() -> None:
     ):
         with pytest.raises(ValueError):
             validate_ackermann_payload(payload)
+
+
+def test_negative_autoware_speed_is_clamped_to_zero() -> None:
+    assert clamp_ackermann_speed(-2.5) == 0.0
+    assert clamp_ackermann_speed(3.0) == 3.0
+    assert math.isnan(clamp_ackermann_speed(math.nan))

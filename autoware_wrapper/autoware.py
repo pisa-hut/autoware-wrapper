@@ -26,6 +26,7 @@ import sensor_msgs.msg as sensor_msgs
 from geometry import (
     ObservationContractError,
     ObservationNormalizer,
+    clamp_ackermann_speed,
     compose_shape_center_pose,
     validate_ackermann_payload,
 )
@@ -1575,7 +1576,7 @@ class AutowarePureAV:
         else:
             steer_speed = 0.0
 
-        speed = float(self._latest_control.longitudinal.velocity)
+        speed = clamp_ackermann_speed(float(self._latest_control.longitudinal.velocity))
 
         acceleration = None
         if bool(self._latest_control.longitudinal.is_defined_acceleration):
