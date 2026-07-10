@@ -205,21 +205,15 @@ class AutowarePureAV:
         self._control_timeout_sec = float(self._rt_cfg.get("control_timeout_sec", 0.01))
         self._engage_ready_stable_sec = float(self._rt_cfg.get("engage_ready_stable_sec", 0.0))
         self._engage_retry_sec = float(self._rt_cfg.get("engage_retry_sec", 3.0))
-        self._engage_retry_interval_sec = float(
-            self._rt_cfg.get("engage_retry_interval_sec", 0.2)
-        )
-        self._diagnostics_graph_enabled = bool(
-            self._rt_cfg.get("diagnostics_graph_enabled", True)
-        )
+        self._engage_retry_interval_sec = float(self._rt_cfg.get("engage_retry_interval_sec", 0.2))
+        self._diagnostics_graph_enabled = bool(self._rt_cfg.get("diagnostics_graph_enabled", True))
         self._diagnostics_as_precondition_failure = bool(
             self._rt_cfg.get("diagnostics_as_precondition_failure", True)
         )
         self._lane_departure_boundary_check_enabled = bool(
             self._rt_cfg.get("lane_departure_boundary_check_enabled", True)
         )
-        self._runtime_param_timeout_sec = float(
-            self._rt_cfg.get("runtime_param_timeout_sec", 5.0)
-        )
+        self._runtime_param_timeout_sec = float(self._rt_cfg.get("runtime_param_timeout_sec", 5.0))
         self._precondition_diagnostic_hardware_ids = set(
             self._rt_cfg.get(
                 "precondition_diagnostic_hardware_ids",
