@@ -23,6 +23,7 @@ import nav_msgs.msg as nav_msgs
 import rclpy
 import rosgraph_msgs.msg as rosgraph_msgs
 import sensor_msgs.msg as sensor_msgs
+import tier4_system_msgs.msg as tier4_system_msgs
 from geometry import (
     ObservationContractError,
     ObservationNormalizer,
@@ -132,6 +133,7 @@ class AutowarePureAV:
         self._control_sub = None
         self._gear_cmd_sub = None
         self._autoware_state_sub = None
+        self._diagnostics_graph_sub = None
         self._client_initial_localization = None
         self._client_set_route_points = None
         self._client_change_to_auto = None
@@ -152,6 +154,7 @@ class AutowarePureAV:
         self._current_gear: int | None = autoware_vehicle_msgs.GearCommand.NONE
         self._latest_control: autoware_control_msgs.Control = None
         self._latest_control_stamp = 0
+        self._latest_diagnostics: list[tuple[int, str, str, str]] = []
         self._kinematic: ObjectKinematicData = ObjectKinematicData()
         self._quit_flag: bool = False
         self._last_error: str | None = None
@@ -189,8 +192,40 @@ class AutowarePureAV:
         self._sensor_model = veh_cfg.get("sensor_model", "sample_sensor_kit")
 
         self._rt_cfg = self._autoware_cfg.get("runtime", {})
+        self._publish_agent_objects = bool(self._rt_cfg.get("publish_agent_objects", True))
+        publish_agent_objects_env = os.getenv("PISA_PUBLISH_AGENT_OBJECTS")
+        if publish_agent_objects_env is not None:
+            self._publish_agent_objects = publish_agent_objects_env.lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
         self._timeout_sec = float(self._rt_cfg.get("timeout_sec", 30.0))
         self._control_timeout_sec = float(self._rt_cfg.get("control_timeout_sec", 0.01))
+        self._engage_ready_stable_sec = float(self._rt_cfg.get("engage_ready_stable_sec", 0.0))
+        self._engage_retry_sec = float(self._rt_cfg.get("engage_retry_sec", 3.0))
+        self._engage_retry_interval_sec = float(
+            self._rt_cfg.get("engage_retry_interval_sec", 0.2)
+        )
+        self._diagnostics_graph_enabled = bool(
+            self._rt_cfg.get("diagnostics_graph_enabled", True)
+        )
+        self._diagnostics_as_precondition_failure = bool(
+            self._rt_cfg.get("diagnostics_as_precondition_failure", True)
+        )
+        self._lane_departure_boundary_check_enabled = bool(
+            self._rt_cfg.get("lane_departure_boundary_check_enabled", True)
+        )
+        self._runtime_param_timeout_sec = float(
+            self._rt_cfg.get("runtime_param_timeout_sec", 5.0)
+        )
+        self._precondition_diagnostic_hardware_ids = set(
+            self._rt_cfg.get(
+                "precondition_diagnostic_hardware_ids",
+                ["lane_departure_checker"],
+            )
+        )
         self._shutdown_interrupt_grace_sec = float(
             self._rt_cfg.get("shutdown_interrupt_grace_sec", 2.0)
         )
@@ -368,14 +403,8 @@ class AutowarePureAV:
 
         logger.info("Waiting for Autoware to be ready to engage...")
         stage_started = time.monotonic()
-        self._wait_until(
-            lambda: (
-                self._operation_mode_state is not None
-                and self._operation_mode_state.is_autonomous_mode_available
-                and not self._operation_mode_state.is_in_transition
-            ),
+        self._wait_for_engage_ready_stable(
             "Autoware ready to engage timed out.",
-            debug_message="Waiting for autoware to be ready to engage...",
         )
         self._log_elapsed("reset.ready_to_engage.wait", stage_started)
 
@@ -419,10 +448,58 @@ class AutowarePureAV:
         while not predicate():
             logger.debug(debug_message() if callable(debug_message) else debug_message)
             if time.time() - start > self._timeout_sec:
-                self._last_error = timeout_message
-                logger.error(timeout_message)
+                full_message = self._compose_timeout_message(timeout_message)
+                precondition_message = self._diagnostics_precondition_message(full_message)
+                if precondition_message is not None:
+                    self._last_error = precondition_message
+                    logger.error(precondition_message)
+                    self._quit_flag = True
+                    raise AvPreconditionFailed(precondition_message)
+
+                self._last_error = full_message
+                logger.error(full_message)
                 self._quit_flag = True
-                raise AvTimeout(timeout_message)
+                raise AvTimeout(full_message)
+            time.sleep(0.1)
+
+    def _is_ready_to_engage(self) -> bool:
+        return (
+            self._vehicle_state == autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE
+            and self._operation_mode_state is not None
+            and self._operation_mode_state.is_autonomous_mode_available
+            and not self._operation_mode_state.is_in_transition
+        )
+
+    def _wait_for_engage_ready_stable(self, timeout_message: str) -> None:
+        start = time.time()
+        stable_since: float | None = None
+        while True:
+            if self._is_ready_to_engage():
+                if stable_since is None:
+                    stable_since = time.time()
+                if time.time() - stable_since >= self._engage_ready_stable_sec:
+                    return
+            else:
+                stable_since = None
+
+            logger.debug(
+                "Waiting for Autoware engage readiness to stabilize: state=%s, operation_mode=%s",
+                self._vehicle_state,
+                self._operation_mode_state,
+            )
+            if time.time() - start > self._timeout_sec:
+                full_message = self._compose_timeout_message(timeout_message)
+                precondition_message = self._diagnostics_precondition_message(full_message)
+                if precondition_message is not None:
+                    self._last_error = precondition_message
+                    logger.error(precondition_message)
+                    self._quit_flag = True
+                    raise AvPreconditionFailed(precondition_message)
+
+                self._last_error = full_message
+                logger.error(full_message)
+                self._quit_flag = True
+                raise AvTimeout(full_message)
             time.sleep(0.1)
 
     def step(self, request: StepRequest) -> StepResponse:
@@ -734,6 +811,14 @@ class AutowarePureAV:
             qos_profile,
         )
 
+        if self._diagnostics_graph_enabled:
+            self._diagnostics_graph_sub = self._node.create_subscription(
+                tier4_system_msgs.DiagGraphStatus,
+                "/diagnostics_graph/status",
+                self._on_diagnostics_graph,
+                QoSProfile(depth=1),
+            )
+
         self._gear_cmd_sub = self._node.create_subscription(
             autoware_vehicle_msgs.GearCommand,
             "/control/command/gear_cmd",
@@ -798,6 +883,75 @@ class AutowarePureAV:
             self._quit_flag = True
             # break
 
+    def _on_diagnostics_graph(self, msg: tier4_system_msgs.DiagGraphStatus) -> None:
+        try:
+            active = []
+            for status in msg.diags:
+                level = self._diagnostic_level_to_int(status.level)
+                if level == 0:
+                    continue
+                active.append(
+                    (
+                        level,
+                        getattr(status, "name", ""),
+                        status.hardware_id,
+                        status.message,
+                    )
+                )
+            self._latest_diagnostics = active
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to update diagnostics graph summary: %s", e)
+
+    def _diagnostics_summary(self) -> str:
+        if not self._latest_diagnostics:
+            return ""
+
+        level_names = {
+            1: "WARN",
+            2: "ERROR",
+            3: "STALE",
+        }
+        parts = []
+        for level, name, hardware_id, message in self._latest_diagnostics[:8]:
+            label = level_names.get(level, str(level))
+            source = name or hardware_id or "unknown"
+            if message:
+                parts.append(f"{label} {source}: {message}")
+            else:
+                parts.append(f"{label} {source}")
+        if len(self._latest_diagnostics) > len(parts):
+            parts.append(f"... {len(self._latest_diagnostics) - len(parts)} more")
+        return "; ".join(parts)
+
+    def _compose_timeout_message(self, timeout_message: str) -> str:
+        diagnostic_summary = self._diagnostics_summary()
+        if diagnostic_summary:
+            return f"{timeout_message} Active diagnostics: {diagnostic_summary}"
+        return timeout_message
+
+    def _diagnostics_precondition_message(self, message: str) -> str | None:
+        if not self._diagnostics_as_precondition_failure:
+            return None
+
+        for level, name, hardware_id, diagnostic_message in self._latest_diagnostics:
+            source = hardware_id or name
+            if source not in self._precondition_diagnostic_hardware_ids:
+                continue
+            if level < 2:
+                continue
+            detail = f"{source}: {diagnostic_message}" if diagnostic_message else source
+            return f"Autoware precondition failed: {detail}. {message}"
+
+        return None
+
+    @staticmethod
+    def _diagnostic_level_to_int(level: int | bytes | str) -> int:
+        if isinstance(level, bytes):
+            return level[0] if level else 0
+        if isinstance(level, str):
+            return ord(level[0]) if level else 0
+        return int(level)
+
     def _log_elapsed(self, label: str, started: float) -> None:
         logger.debug("%s took %.3fs", label, time.monotonic() - started)
 
@@ -821,6 +975,8 @@ class AutowarePureAV:
         self._wait_for_service(self._client_change_to_auto, "ChangeOperationMode")
         logger.info("Autoware services are ready.")
         self._log_elapsed("reset.wait_services", stage_started)
+
+        self._apply_runtime_autoware_params()
 
     def _launch_autoware(self) -> None:
         if self._map_path is None:
@@ -872,6 +1028,52 @@ class AutowarePureAV:
                 stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid,
             )
+
+    def _apply_runtime_autoware_params(self) -> None:
+        if self._lane_departure_boundary_check_enabled:
+            return
+
+        logger.warning(
+            "Disabling Autoware lane departure boundary check via runtime config. "
+            "Autoware may engage from poses that it would normally reject as unsafe."
+        )
+        self._set_ros_param(
+            "/control/trajectory_follower/lane_departure_checker_node",
+            "boundary_departure_checker",
+            "false",
+        )
+
+    def _set_ros_param(self, node_name: str, param_name: str, value: str) -> None:
+        cmd = (
+            f"source {shlex.quote(str(self._ros_setup_script))} && "
+            f"ros2 param set {shlex.quote(node_name)} "
+            f"{shlex.quote(param_name)} {shlex.quote(value)}"
+        )
+        try:
+            completed = subprocess.run(
+                ["bash", "-lc", cmd],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self._runtime_param_timeout_sec,
+            )
+        except subprocess.TimeoutExpired as e:
+            msg = (
+                f"Timed out while setting Autoware parameter {node_name}.{param_name} "
+                f"after {self._runtime_param_timeout_sec}s"
+            )
+            self._last_error = msg
+            self._quit_flag = True
+            raise AvTimeout(msg) from e
+
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip()
+            stdout = completed.stdout.strip()
+            detail = stderr or stdout or f"exit code {completed.returncode}"
+            msg = f"Failed to set Autoware parameter {node_name}.{param_name}: {detail}"
+            self._last_error = msg
+            self._quit_flag = True
+            raise AvUnavailable(msg)
 
     def _stop_autoware_process(self) -> None:
         """
@@ -1090,6 +1292,7 @@ class AutowarePureAV:
         self._route_state = None
         self._latest_control = None
         self._latest_control_stamp = 0
+        self._latest_diagnostics = []
 
     # ------------------------------------------------------------------
     # callbacks
@@ -1265,7 +1468,7 @@ class AutowarePureAV:
         logger.info("Engaging Autoware autonomous mode...")
         stage_started = time.monotonic()
         try:
-            self._call_change_to_autonomous()
+            self._call_change_to_autonomous_with_retry()
             self._control_mode = autoware_vehicle_msgs.ControlModeReport.AUTONOMOUS
         except AvTimeout as e:
             self._quit_flag = True
@@ -1283,6 +1486,26 @@ class AutowarePureAV:
         self._initialized = True
         logger.info("Autoware is running.")
         self._log_elapsed("reset.engage", stage_started)
+
+    def _call_change_to_autonomous_with_retry(self) -> None:
+        deadline = time.time() + self._engage_retry_sec
+
+        while True:
+            try:
+                self._wait_for_engage_ready_stable(
+                    "Autoware ready to engage timed out while retrying autonomous mode.",
+                )
+                self._call_change_to_autonomous()
+                return
+            except AvUnavailable as e:
+                if time.time() >= deadline:
+                    raise
+                logger.warning(
+                    "Autoware autonomous mode change was rejected; retrying for %.1fs: %s",
+                    max(0.0, deadline - time.time()),
+                    e,
+                )
+                time.sleep(self._engage_retry_interval_sec)
 
     def _call_change_to_autonomous(self) -> None:
         assert self._node is not None
@@ -1346,6 +1569,10 @@ class AutowarePureAV:
         msg.header.stamp = t.to_msg()
 
         msg.header.frame_id = "map"
+
+        if not self._publish_agent_objects:
+            self._objects_pub.publish(msg)
+            return
 
         for ag in self._agents:
             obj = autoware_perception_msgs.DetectedObject()

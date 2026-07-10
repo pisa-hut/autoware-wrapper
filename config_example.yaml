@@ -1,0 +1,124 @@
+# Example configuration for autoware-wrapper.
+#
+# This file is not loaded automatically by the wrapper. Pass the same structure
+# through the PISA wrapper config field used by your runner.
+
+autoware:
+  # Autoware installation root used before running ros2 launch.
+  root: /autoware
+
+  # ROS setup script sourced by the wrapper before launching Autoware and when
+  # setting runtime ROS parameters.
+  ros_setup_script: /opt/ros/humble/setup.bash
+
+  launch:
+    # ROS 2 launch package and launch file.
+    package: autoware_launch
+    file: pisa.launch.xml
+
+    # true disables RViz; false launches RViz.
+    headless: true
+
+    # Extra launch arguments appended after the wrapper's built-in arguments.
+    # Each entry should be a complete launch argument, for example:
+    #   - "rviz:=true"
+    #   - "launch_dummy_diag_publisher:=false"
+    extra_args: []
+
+    # When true, Autoware launch stdout/stderr are written to log_path under the
+    # current scenario output directory. When false, they are discarded.
+    log: false
+    log_path: autoware_launch.log
+
+  data:
+    # Passed to Autoware launch as data_path.
+    data_path: /autoware_data
+
+  vehicle:
+    # Passed to Autoware launch as vehicle_model and sensor_model.
+    model: sample_vehicle
+    sensor_model: sample_sensor_kit
+
+  runtime:
+    # General timeout for Autoware services and state transitions during reset,
+    # route setting, planning, engage, stop, and route clear.
+    timeout_sec: 30.0
+
+    # Maximum time to wait for a fresh control command in each step when
+    # wait_control is true.
+    control_timeout_sec: 0.01
+
+    # When true, step() waits up to control_timeout_sec for a newly stamped
+    # control command before returning.
+    wait_control: false
+
+    # Route option passed to /api/routing/set_route_points.
+    allow_goal_modification: false
+
+    # Publish other scenario agents as Autoware detected objects.
+    # If false, the wrapper still publishes an empty DetectedObjects message.
+    # Can also be overridden with env PISA_PUBLISH_AGENT_OBJECTS=false.
+    publish_agent_objects: true
+
+    # Require autonomous-mode availability to remain stable for this many
+    # seconds before calling change_to_autonomous. During reset, wrapper time
+    # advances while the simulator state is held at the initial observation, so
+    # keep this at 0.0 unless you explicitly need debounce behavior.
+    engage_ready_stable_sec: 0.0
+
+    # Retry window after change_to_autonomous is rejected even though the
+    # availability gate looked ready.
+    engage_retry_sec: 3.0
+
+    # Sleep between change_to_autonomous retries.
+    engage_retry_interval_sec: 0.2
+
+    # Subscribe to /diagnostics_graph/status and append active WARN/ERROR/STALE
+    # diagnostics to planning/engage timeout errors. This uses the aggregated
+    # graph topic, not the high-volume /diagnostics topic.
+    diagnostics_graph_enabled: true
+
+    # If true, timeout errors caused by selected diagnostic hardware IDs are
+    # raised as AvPreconditionFailed instead of AvTimeout. This lets simcore or
+    # the runner distinguish scenario/setup precondition failures from generic
+    # AV timeouts. Useful for cases such as lane_departure_checker rejecting an
+    # unsafe initial pose.
+    diagnostics_as_precondition_failure: true
+
+    # Diagnostic hardware_id/source values that can be converted into
+    # AvPreconditionFailed when diagnostics_as_precondition_failure is true.
+    # In ROS diagnostics this field is often a software module id, not physical
+    # hardware.
+    precondition_diagnostic_hardware_ids:
+      - lane_departure_checker
+
+    # Keep Autoware's boundary departure safety gate enabled. If set to false,
+    # the wrapper runs:
+    #   ros2 param set /control/trajectory_follower/lane_departure_checker_node
+    #   boundary_departure_checker false
+    # This may allow engage from poses that Autoware would normally reject as
+    # unsafe. Use only for explicit experiments.
+    lane_departure_boundary_check_enabled: true
+
+    # Timeout for runtime ROS parameter writes such as disabling the lane
+    # departure boundary check.
+    runtime_param_timeout_sec: 5.0
+
+    # Shutdown behavior for the Autoware launch process group.
+    shutdown_interrupt_grace_sec: 2.0
+    shutdown_terminate_grace_sec: 1.0
+    shutdown_kill_grace_sec: 2.0
+
+    # Time to wait for the Autoware process group to exit after signals.
+    process_group_cleanup_timeout_sec: 3.0
+
+    # Time to wait for previous Autoware ROS graph nodes to disappear during
+    # reset cleanup.
+    ros_graph_cleanup_timeout_sec: 12.0
+
+    # Best-effort ROS graph wait used when strict cleanup is disabled.
+    ros_graph_best_effort_wait_sec: 1.0
+
+    # If true, stale Autoware ROS nodes after cleanup are fatal. If false, the
+    # wrapper logs a warning and continues after best-effort cleanup.
+    require_ros_graph_cleanup: false
