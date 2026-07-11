@@ -24,6 +24,7 @@ import rclpy
 import rosgraph_msgs.msg as rosgraph_msgs
 import sensor_msgs.msg as sensor_msgs
 import tier4_system_msgs.msg as tier4_system_msgs
+from contract import init_response
 from geometry import (
     ObservationContractError,
     ObservationNormalizer,
@@ -38,6 +39,7 @@ from pisa_api.av import (
     ControlCommand,
     ControlMode,
     InitRequest,
+    InitResponse,
     InvalidAvRequest,
     ObjectKinematicData,
     ObjectStateData,
@@ -241,7 +243,7 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
-    def init(self, request: InitRequest) -> None:
+    def init(self, request: InitRequest) -> InitResponse:
         """
         - ROS node + spin thread only
         - Autoware itself is relaunched from reset() for each scenario
@@ -257,6 +259,53 @@ class AutowarePureAV:
             raise
 
         logger.info("Autoware AV initialized. Autoware stack will be launched on reset.")
+        return init_response(self._effective_config())
+
+    def _effective_config(self) -> dict:
+        """Return only normalized wrapper-specific settings that are actually in use."""
+        return {
+            "root": str(self._root),
+            "ros_setup_script": str(self._ros_setup_script),
+            "launch": {
+                "package": str(self._launch_package),
+                "file": str(self._launch_file),
+                "headless": self._headless,
+                "extra_args": [str(arg) for arg in self._extra_launch_args],
+                "log": self._log_enabled,
+                "log_path": self._autoware_log_path.name,
+            },
+            "data": {"data_path": str(self._data_path)},
+            "vehicle": {
+                "model": str(self._vehicle_model),
+                "sensor_model": str(self._sensor_model),
+            },
+            "runtime": {
+                "publish_agent_objects": self._publish_agent_objects,
+                "timeout_sec": self._timeout_sec,
+                "control_timeout_sec": self._control_timeout_sec,
+                "wait_control": bool(self._rt_cfg.get("wait_control", False)),
+                "allow_goal_modification": bool(self._rt_cfg.get("allow_goal_modification", False)),
+                "engage_ready_stable_sec": self._engage_ready_stable_sec,
+                "engage_retry_sec": self._engage_retry_sec,
+                "engage_retry_interval_sec": self._engage_retry_interval_sec,
+                "diagnostics_graph_enabled": self._diagnostics_graph_enabled,
+                "diagnostics_as_precondition_failure": (self._diagnostics_as_precondition_failure),
+                "precondition_diagnostic_hardware_ids": sorted(
+                    str(value) for value in self._precondition_diagnostic_hardware_ids
+                ),
+                "lane_departure_boundary_check_enabled": (
+                    self._lane_departure_boundary_check_enabled
+                ),
+                "runtime_param_timeout_sec": self._runtime_param_timeout_sec,
+                "shutdown_interrupt_grace_sec": self._shutdown_interrupt_grace_sec,
+                "shutdown_terminate_grace_sec": self._shutdown_terminate_grace_sec,
+                "shutdown_kill_grace_sec": self._shutdown_kill_grace_sec,
+                "process_group_cleanup_timeout_sec": self._process_group_cleanup_timeout_sec,
+                "ros_graph_cleanup_timeout_sec": self._ros_graph_cleanup_timeout_sec,
+                "ros_graph_best_effort_wait_sec": self._ros_graph_best_effort_wait_sec,
+                "require_ros_graph_cleanup": self._require_ros_graph_cleanup,
+            },
+        }
 
     def reset(self, request: ResetRequest) -> ResetResponse:
         try:

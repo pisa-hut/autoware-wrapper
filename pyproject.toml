@@ -1,16 +1,16 @@
 [project]
 name = "autoware-wrapper"
-version = "0.3.0"
+version = "0.3.1"
 description = "autoware-wrapper"
 readme = "README.md"
 requires-python = "==3.10.*"
-dependencies = ["numpy>=2.2.6", "pyyaml>=6.0.3", "pisa-api>=0.4.0"]
+dependencies = ["numpy>=2.2.6", "pyyaml>=6.0.3", "pisa-api>=0.4.1", "tomli>=2.0.1"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [tool.uv.sources]
-pisa-api = { git = "https://github.com/pisa-hut/pisa-api.git", rev = "709d811ee605ffe84f5a34de98710bca10dfd611" }
+pisa-api = { git = "https://github.com/pisa-hut/pisa-api.git" }
 
 
 [tool.ruff]
