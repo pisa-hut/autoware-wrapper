@@ -4,12 +4,13 @@ requires-python = "==3.10.*"
 
 [[package]]
 name = "autoware-wrapper"
-version = "0.3.0"
+version = "0.3.1"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pisa-api" },
     { name = "pyyaml" },
+    { name = "tomli" },
 ]
 
 [package.dev-dependencies]
@@ -21,8 +22,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.2.6" },
-    { name = "pisa-api", git = "https://github.com/pisa-hut/pisa-api.git?rev=709d811ee605ffe84f5a34de98710bca10dfd611" },
+    { name = "pisa-api", git = "https://github.com/pisa-hut/pisa-api.git" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "tomli", specifier = ">=2.0.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -115,8 +117,8 @@ wheels = [
 
 [[package]]
 name = "pisa-api"
-version = "0.4.0"
-source = { git = "https://github.com/pisa-hut/pisa-api.git?rev=709d811ee605ffe84f5a34de98710bca10dfd611#709d811ee605ffe84f5a34de98710bca10dfd611" }
+version = "0.4.1"
+source = { git = "https://github.com/pisa-hut/pisa-api.git#961982b666ec5aa904436894c8f9d800d5466f75" }
 dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
