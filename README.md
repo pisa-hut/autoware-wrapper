@@ -35,11 +35,22 @@ wrapper-specific Autoware settings that actually took effect. For example:
     },
     "runtime": {
       "publish_agent_objects": true,
-      "timeout_sec": 30.0
+      "service_discovery_timeout_sec": 30.0,
+      "service_response_timeout_sec": 10.0,
+      "localization_timeout_sec": 30.0,
+      "planning_timeout_sec": 60.0,
+      "engage_timeout_sec": 30.0,
+      "stop_timeout_sec": 10.0,
+      "route_clear_timeout_sec": 10.0
     }
   }
 }
 ```
+
+Each semantic timeout applies independently to its service or state-transition
+stage; they do not form a cumulative reset deadline. The legacy
+`autoware.runtime.timeout_sec` setting is deprecated but remains supported as a
+fallback for any semantic timeout that is not explicitly configured.
 
 The execution manifest records this metadata. Never put secrets, tokens,
 credentials, environment variables, or unfiltered raw config in it. Shared

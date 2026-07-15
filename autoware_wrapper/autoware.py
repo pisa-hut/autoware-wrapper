@@ -58,6 +58,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile
 from rclpy.time import Time
+from runtime_config import RuntimeTimeouts, resolve_runtime_timeouts
 from tf2_ros import TransformBroadcaster
 
 CLOCK_PUB_HZ = 100.0  # Hz
@@ -108,6 +109,7 @@ class AutowarePureAV:
     """
 
     def __init__(self, output_base: str | Path = ".", cfg: dict | None = None):
+        self._legacy_timeout_warning_emitted = False
         self._configure(output_base, cfg or {})
 
         # ScenarioPack
@@ -203,7 +205,15 @@ class AutowarePureAV:
                 "no",
                 "off",
             }
-        self._timeout_sec = float(self._rt_cfg.get("timeout_sec", 30.0))
+        self._timeouts: RuntimeTimeouts = resolve_runtime_timeouts(self._rt_cfg)
+        if "timeout_sec" in self._rt_cfg and not self._legacy_timeout_warning_emitted:
+            logger.warning(
+                "autoware.runtime.timeout_sec is deprecated; use "
+                "service_discovery_timeout_sec, service_response_timeout_sec, "
+                "localization_timeout_sec, planning_timeout_sec, engage_timeout_sec, "
+                "stop_timeout_sec, and route_clear_timeout_sec instead"
+            )
+            self._legacy_timeout_warning_emitted = True
         self._control_timeout_sec = float(self._rt_cfg.get("control_timeout_sec", 0.01))
         self._engage_ready_stable_sec = float(self._rt_cfg.get("engage_ready_stable_sec", 0.0))
         self._engage_retry_sec = float(self._rt_cfg.get("engage_retry_sec", 3.0))
@@ -281,7 +291,7 @@ class AutowarePureAV:
             },
             "runtime": {
                 "publish_agent_objects": self._publish_agent_objects,
-                "timeout_sec": self._timeout_sec,
+                **self._timeouts.as_dict(),
                 "control_timeout_sec": self._control_timeout_sec,
                 "wait_control": bool(self._rt_cfg.get("wait_control", False)),
                 "allow_goal_modification": bool(self._rt_cfg.get("allow_goal_modification", False)),
@@ -349,7 +359,7 @@ class AutowarePureAV:
         sps: ScenarioPackData,
         init_obs: ObservationData,
     ) -> None:
-        logger.debug("Setting timeout sec = %.2f", self._timeout_sec)
+        logger.debug("Using runtime timeouts: %s", self._timeouts.as_dict())
         self._output_dir = self._output_base / output_related
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._autoware_log_path = self._output_dir / self._autoware_log_path.name
@@ -406,6 +416,8 @@ class AutowarePureAV:
         self._wait_for_autoware_state(
             autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE,
             "Autoware localization initialization timed out.",
+            self._timeouts.localization_timeout_sec,
+            "localization_timeout_sec",
         )
         self._log_elapsed("reset.initialize_localization.wait", stage_started)
 
@@ -432,6 +444,8 @@ class AutowarePureAV:
         self._wait_for_autoware_state_to_change(
             autoware_system_msgs.AutowareState.WAITING_FOR_ROUTE,
             "Autoware set route timed out.",
+            self._timeouts.planning_timeout_sec,
+            "planning_timeout_sec",
         )
         self._log_elapsed("reset.set_route.wait", stage_started)
 
@@ -441,6 +455,8 @@ class AutowarePureAV:
         self._wait_for_autoware_state(
             autoware_system_msgs.AutowareState.WAITING_FOR_ENGAGE,
             "Autoware planning timed out.",
+            self._timeouts.planning_timeout_sec,
+            "planning_timeout_sec",
         )
         self._log_elapsed("reset.planning.wait", stage_started)
 
@@ -457,10 +473,14 @@ class AutowarePureAV:
         self,
         expected_state: int,
         timeout_message: str,
+        timeout_sec: float,
+        timeout_config_key: str,
     ) -> None:
         self._wait_until(
             lambda: self._vehicle_state == expected_state,
             timeout_message,
+            timeout_sec,
+            timeout_config_key,
             debug_message=lambda: (
                 f"Waiting for Autoware state {expected_state}, current state: {self._vehicle_state}"
             ),
@@ -470,10 +490,14 @@ class AutowarePureAV:
         self,
         current_state: int,
         timeout_message: str,
+        timeout_sec: float,
+        timeout_config_key: str,
     ) -> None:
         self._wait_until(
             lambda: self._vehicle_state != current_state,
             timeout_message,
+            timeout_sec,
+            timeout_config_key,
             debug_message=lambda: (
                 f"Waiting for Autoware to leave state {current_state}, "
                 f"current state: {self._vehicle_state}"
@@ -484,14 +508,19 @@ class AutowarePureAV:
         self,
         predicate: Callable[[], bool],
         timeout_message: str,
+        timeout_sec: float,
+        timeout_config_key: str,
         *,
         debug_message: str | Callable[[], str],
     ) -> None:
         start = time.time()
         while not predicate():
             logger.debug(debug_message() if callable(debug_message) else debug_message)
-            if time.time() - start > self._timeout_sec:
-                full_message = self._compose_timeout_message(timeout_message)
+            if time.time() - start > timeout_sec:
+                timeout_detail = self._timeout_detail(timeout_sec, timeout_config_key)
+                full_message = self._compose_timeout_message(
+                    f"{timeout_message.rstrip('.')} {timeout_detail}."
+                )
                 precondition_message = self._diagnostics_precondition_message(full_message)
                 if precondition_message is not None:
                     self._last_error = precondition_message
@@ -515,6 +544,7 @@ class AutowarePureAV:
 
     def _wait_for_engage_ready_stable(self, timeout_message: str) -> None:
         start = time.time()
+        timeout_sec = self._timeouts.engage_timeout_sec
         stable_since: float | None = None
         while True:
             if self._is_ready_to_engage():
@@ -530,8 +560,11 @@ class AutowarePureAV:
                 self._vehicle_state,
                 self._operation_mode_state,
             )
-            if time.time() - start > self._timeout_sec:
-                full_message = self._compose_timeout_message(timeout_message)
+            if time.time() - start > timeout_sec:
+                timeout_detail = self._timeout_detail(timeout_sec, "engage_timeout_sec")
+                full_message = self._compose_timeout_message(
+                    f"{timeout_message.rstrip('.')} {timeout_detail}."
+                )
                 precondition_message = self._diagnostics_precondition_message(full_message)
                 if precondition_message is not None:
                     self._last_error = precondition_message
@@ -1351,17 +1384,32 @@ class AutowarePureAV:
     # ------------------------------------------------------------------
     # AD API calls
     # ------------------------------------------------------------------
-    def _wait_for_service(self, client, name: str, timeout_sec: float | None = None) -> None:
-        timeout = timeout_sec or self._timeout_sec
+    @staticmethod
+    def _timeout_detail(timeout_sec: float, config_key: str) -> str:
+        return f"after {timeout_sec}s (config: autoware.runtime.{config_key})"
+
+    def _wait_for_service(self, client, name: str) -> None:
+        timeout = self._timeouts.service_discovery_timeout_sec
         start = time.time()
         while not client.wait_for_service(timeout_sec=1.0):
             if time.time() - start > timeout:
-                msg = f"Service {name} not available after {timeout}s"
+                detail = self._timeout_detail(timeout, "service_discovery_timeout_sec")
+                msg = f"Service {name} not available {detail}"
                 self._last_error = msg
                 self._quit_flag = True
                 raise AvTimeout(msg)
             logger.debug(f"Waiting for Autoware service {name}...")
         logger.debug("Service %s is available.", name)
+
+    def _wait_for_service_response(self, future, operation_name: str):
+        timeout = self._timeouts.service_response_timeout_sec
+        start = time.time()
+        while rclpy.ok() and not future.done() and time.time() - start < timeout:
+            time.sleep(0.01)
+        if not future.done():
+            detail = self._timeout_detail(timeout, "service_response_timeout_sec")
+            raise AvTimeout(f"{operation_name} response timeout {detail}")
+        return future.result()
 
     def _call_initialize_localization(self) -> None:
         assert self._node is not None
@@ -1418,14 +1466,7 @@ class AutowarePureAV:
         req.pose = [pose_msg]
 
         fut = self._client_initial_localization.call_async(req)
-
-        start = time.time()
-        while rclpy.ok() and not fut.done() and time.time() - start < self._timeout_sec:
-            time.sleep(0.01)
-        if not fut.done():
-            raise AvTimeout(f"InitializeLocalization response timeout after {self._timeout_sec}s")
-
-        res = fut.result()
+        res = self._wait_for_service_response(fut, "InitializeLocalization")
         if res is None or not res.status.success:
             status_msg = getattr(res.status, "message", None) if res else "no response"
             code = getattr(res.status, "code", "unknown") if res else "no response"
@@ -1461,12 +1502,7 @@ class AutowarePureAV:
         )
 
         fut = self._client_set_route_points.call_async(req)
-        start = time.time()
-        while rclpy.ok() and not fut.done() and time.time() - start < self._timeout_sec:
-            time.sleep(0.01)
-        if not fut.done():
-            raise AvTimeout(f"SetRoutePoints response timeout after {self._timeout_sec}s")
-        res = fut.result()
+        res = self._wait_for_service_response(fut, "SetRoutePoints")
         if res is None or not res.status.success:
             status_msg = getattr(res.status, "message", None) if res else "no response"
             msg = f"SetRoutePoints failed: message={status_msg}, start: ({self._kinematic.x}, {self._kinematic.y}, {self._kinematic.z}, {self._kinematic.yaw}), destination: ({goal.position.x}, {goal.position.y}, {goal.position.z}, {gp.world.h})"
@@ -1476,12 +1512,7 @@ class AutowarePureAV:
         # Clear route
         req = autoware_adapi_v1_msgs_srv.ClearRoute.Request()
         fut = self._client_clear_route.call_async(req)
-        start = time.time()
-        while rclpy.ok() and not fut.done() and time.time() - start < self._timeout_sec:
-            time.sleep(0.01)
-        if not fut.done():
-            raise AvTimeout(f"ClearRoute response timeout after {self._timeout_sec}s")
-        res = fut.result()
+        res = self._wait_for_service_response(fut, "ClearRoute")
         if res is None or not res.status.success:
             status_msg = getattr(res.status, "message", None) if res else "no response"
             code = getattr(res.status, "code", "unknown") if res else "no response"
@@ -1493,14 +1524,7 @@ class AutowarePureAV:
         assert self._node is not None
         req = autoware_adapi_v1_msgs_srv.ChangeOperationMode.Request()
         fut = self._client_change_to_stop.call_async(req)
-        start = time.time()
-        while rclpy.ok() and not fut.done() and time.time() - start < self._timeout_sec:
-            time.sleep(0.01)
-        if not fut.done():
-            raise AvTimeout(
-                f"ChangeOperationMode(STOP) response timeout after {self._timeout_sec}s"
-            )
-        res = fut.result()
+        res = self._wait_for_service_response(fut, "ChangeOperationMode(STOP)")
         if res is None or not res.status.success:
             msg = f"ChangeOperationMode(STOP) failed: {getattr(res.status, 'message', 'unknown') if res else 'no response'}"
             self._last_error = msg
@@ -1525,6 +1549,8 @@ class AutowarePureAV:
         self._wait_for_autoware_state(
             autoware_system_msgs.AutowareState.DRIVING,
             "Autoware change to autonomous mode timed out.",
+            self._timeouts.engage_timeout_sec,
+            "engage_timeout_sec",
         )
         self._initialized = True
         logger.info("Autoware is running.")
@@ -1555,14 +1581,7 @@ class AutowarePureAV:
 
         req = autoware_adapi_v1_msgs_srv.ChangeOperationMode.Request()
         fut = self._client_change_to_auto.call_async(req)
-        start = time.time()
-        while rclpy.ok() and not fut.done() and time.time() - start < self._timeout_sec:
-            time.sleep(0.01)
-        if not fut.done():
-            raise AvTimeout(
-                f"ChangeOperationMode(AUTONOMOUS) response timeout after {self._timeout_sec}s"
-            )
-        res = fut.result()
+        res = self._wait_for_service_response(fut, "ChangeOperationMode(AUTONOMOUS)")
         if res is None or not res.status.success:
             msg = f"ChangeOperationMode(AUTONOMOUS) failed: {getattr(res.status, 'message', 'unknown') if res else 'no response'}"
             self._last_error = msg
@@ -1902,6 +1921,7 @@ class AutowarePureAV:
 
         # wait until Autoware reports stopped state or timeout
         start = time.time()
+        stop_timeout = self._timeouts.stop_timeout_sec
         while rclpy.ok() and (
             self._autoware_motion_state is None
             or self._autoware_motion_state != autoware_adapi_v1_msgs.MotionState.STOPPED
@@ -1909,9 +1929,11 @@ class AutowarePureAV:
             logger.debug(
                 f"Waiting for Autoware to stop... current state: {self._autoware_motion_state}, Elapsed time: {time.time() - start:.2f}s"
             )
-            if time.time() - start > self._timeout_sec:
+            if time.time() - start > stop_timeout:
+                detail = self._timeout_detail(stop_timeout, "stop_timeout_sec")
                 logger.warning(
-                    f"Timeout while waiting for Autoware to stop after {self._timeout_sec}s"
+                    "Timeout while waiting for Autoware to stop %s",
+                    detail,
                 )
                 break
             time.sleep(0.1)
@@ -1924,6 +1946,7 @@ class AutowarePureAV:
 
         # check self._route_state to be UNSET and autoware_state to be WAITING_FOR_ROUTE or WAITING_FOR_INITIAL_POSE
         start = time.time()
+        route_clear_timeout = self._timeouts.route_clear_timeout_sec
         while (
             self._route_state != autoware_adapi_v1_msgs.RouteState.UNSET
             or self._vehicle_state is None
@@ -1932,9 +1955,11 @@ class AutowarePureAV:
             logger.debug(
                 f"Waiting for Autoware to clear route... current route state: {self._route_state}, elapsed time: {time.time() - start:.2f}s"
             )
-            if time.time() - start > self._timeout_sec:
+            if time.time() - start > route_clear_timeout:
+                detail = self._timeout_detail(route_clear_timeout, "route_clear_timeout_sec")
                 logger.warning(
-                    f"Timeout while waiting for Autoware to clear route after {self._timeout_sec}s"
+                    "Timeout while waiting for Autoware to clear route %s",
+                    detail,
                 )
                 break
             time.sleep(0.1)

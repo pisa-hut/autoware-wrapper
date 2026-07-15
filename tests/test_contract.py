@@ -40,7 +40,7 @@ def test_wrapper_version_falls_back_to_checkout_pyproject(
 def test_init_response_identifies_autoware_and_metadata_round_trips() -> None:
     effective_config = {
         "launch": {"headless": True, "extra_args": ["rviz:=false"]},
-        "runtime": {"timeout_sec": 12.5, "publish_agent_objects": False},
+        "runtime": {"planning_timeout_sec": 12.5, "publish_agent_objects": False},
         "vehicle": {"model": "sample_vehicle", "sensor_model": "sample_sensor_kit"},
     }
 

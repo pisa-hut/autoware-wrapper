@@ -40,9 +40,25 @@ autoware:
     sensor_model: sample_sensor_kit
 
   runtime:
-    # General timeout for Autoware services and state transitions during reset,
-    # route setting, planning, engage, stop, and route clear.
-    timeout_sec: 30.0
+    # Maximum time to wait for each required Autoware service to appear.
+    service_discovery_timeout_sec: 30.0
+
+    # Maximum time to wait for one Autoware service response.
+    service_response_timeout_sec: 10.0
+
+    # State-transition timeouts. Each reset stage has its own independent
+    # timeout; these values are not a cumulative reset deadline.
+    localization_timeout_sec: 30.0
+    planning_timeout_sec: 60.0
+    engage_timeout_sec: 30.0
+
+    # Best-effort vehicle stop and route-clear state waits.
+    stop_timeout_sec: 10.0
+    route_clear_timeout_sec: 10.0
+
+    # Deprecated compatibility setting. When present, timeout_sec is used as
+    # the fallback for any semantic timeout above that is not explicitly set.
+    # timeout_sec: 30.0
 
     # Maximum time to wait for a fresh control command in each step when
     # wait_control is true.
